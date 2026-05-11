@@ -1,0 +1,9 @@
+.venv/
+__pycache__/
+*.py[cod]
+.ipynb_checkpoints/
+
+# Local model checkpoints and generated artifacts
+*.pth
+*.pt
+*.ckpt
