@@ -39,12 +39,24 @@ llm/
 │   ├── artifacts/
 │   └── notes.md
 ├── cs336/
+│   ├── notes/
+│   ├── experiments/
+│   ├── figures/
 │   └── README.md
 ├── references/
+├── docs/
 └── README.md
 ```
 
 `from-scratch-book/` contains the current book-based learning stage. 
+
+## Environment
+
+This repository uses a project-local `.venv` managed by `uv`. PyTorch is large,
+so the environment is treated as the main long-lived LLM research environment
+instead of being recreated for every small experiment.
+
+See `docs/environment.md` for the environment layout and disk strategy.
 
 ## Research Direction
 

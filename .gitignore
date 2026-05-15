@@ -2,8 +2,20 @@
 __pycache__/
 *.py[cod]
 .ipynb_checkpoints/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
 
 # Local model checkpoints and generated artifacts
 *.pth
 *.pt
 *.ckpt
+*.safetensors
+artifacts/
+checkpoints/
+datasets/
+runs/
+wandb/
+
+# External course/source materials cloned for local study
+cs336/lectures/

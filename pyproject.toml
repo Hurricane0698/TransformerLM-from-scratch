@@ -1,0 +1,16 @@
+[project]
+name = "llm"
+version = "0.1.0"
+description = "From-scratch LLM learning and research experiments."
+requires-python = ">=3.12,<3.13"
+dependencies = [
+    "ipykernel>=7.2.0",
+    "matplotlib>=3.10.0",
+    "notebook>=7.5.0",
+    "numpy>=2.0.0",
+    "tiktoken>=0.12.0",
+    "torch==2.4.0",
+]
+
+[tool.uv]
+package = false
