@@ -20,7 +20,13 @@ def train_bpe(input_path:str,
     else:
         train_data_list = [train_data]
     #pre-tokenization
-    count = {} #count要对全数据集计数，学习整个训练数据集的统计分布。
+    count = {} #count要对全数据集计数，学习整个训练数据集的统计分布。{(b'f', b'd', b'u'):xxx,...}
+    ''' count:
+            token_tuple -> frequency
+        pair_counts:
+            pair -> total_frequency
+        pair_to_words:
+            pair -> set of token_tuple that currently contain this pair'''
     PAT = r"""'(?:[sdmt]|ll|ve|re)| ?\p{L}+| ?\p{N}+| ?[^\s\p{L}\p{N}]+|\s+(?!\S)|\s+"""
     for data in train_data_list:
         #encode，计数
@@ -37,16 +43,21 @@ def train_bpe(input_path:str,
                 count[pre_token_tuple] = 1
     merge_list = []
     while len(vocab) < vocab_size-len(special_tokens):
-        pair_counts = {}
+        pair_counts = {} #{(b'a', b'b'):x}
+        pair_to_words = {}#{(b'a', b'b'):set((b'a', b'b', b'c'),(b'g', b'a', b'b')),....}
         #统计次数比先统计长度判断是否还有两个以上元素更好，因为没有次数就没有两个以上的元素，最终落点是在次数判断上。
         for per_token_tuple in count:
             if len(per_token_tuple) >= 2:#先判断元组不是单元素
                 for i in range(0, len(per_token_tuple)-1):
                         sub_tuple = tuple([per_token_tuple[i], per_token_tuple[i+1]])
+                        if sub_tuple not in pair_to_words:
+                            pair_to_words[sub_tuple] = set()
+                        pair_to_words[sub_tuple].add(per_token_tuple)
+                        #set.add(pair_to_words[sub_tuple], per_token_tuple)这种写法语义不太干净，add是set对象方法，应该让set自己调用
                         if sub_tuple in pair_counts:
                             pair_counts[sub_tuple] += count[per_token_tuple] #加每个token tuple的计数，这里之前看错变量了
                         else:
-                            pair_counts[sub_tuple] = count[per_token_tuple]
+                            pair_counts[sub_tuple] = count[per_token_tuple] 
             else:
                 continue
         if not pair_counts:#if pair_counts is None 判断不对,pair_counts 初始化为 {}，没有 pair 时它是空 dict，不是 None。
@@ -56,26 +67,39 @@ def train_bpe(input_path:str,
         max_tup_list = []
         for _, (tup, freq) in enumerate(pair_counts.items()):
             if freq == max_counts:
-                max_tup_list.append(tup)
+                max_tup_list.append(tup) #[(b'c', b'f'), (b'g', b'd')]
         if len(max_tup_list) > 1:
             #先把每个tuple拿出来，然后比较第一个位置第一个byte数值，不行就第二个，直到元组第一个位置遍历完转到第二个，重复比较
         #若为1，应该是把 merge 的那两个元素拿出来合并成一个，然后索引加在 vocab 的里面，同时 merge list 也加
-            best_pair = max(max_tup_list)
+            best_pair = max(max_tup_list) #(b'a', b'b')
             expected = best_pair[0] + best_pair[1] #得到的就是list，不用继续索引了
         else:
             best_pair = max_tup_list[0]
-            expected = best_pair[0] + best_pair[1]
+            expected = best_pair[0] + best_pair[1] #b'ab'
         vocab[len(vocab)] = expected
         merge_list.append(best_pair)
         new_count = {}
+        #定量评估扫描重建new_count的消费
+        total = len(count.keys())
+        total_length = 0
+        affected = 0
+        affected_length = 0
+        affected_words = pair_to_words[best_pair]
         for per_token_tuple2 in count:
+            total_length += len(per_token_tuple2)
             if len(per_token_tuple2) >= 2:
+                #维护一个判断指针，来判断是否计数。是的话跳过，否的化计数。防止重复计数
+                counted = False
                 new_per_token_list = []
                 i = 0
                 while i <= len(per_token_tuple2)-1:
                     if i <= len(per_token_tuple2) - 2:
                         if best_pair == tuple([per_token_tuple2[i], per_token_tuple2[i+1]]):
                             new_per_token_list.append(expected)
+                            if counted == False:
+                                affected += 1
+                                affected_length += len(per_token_tuple2)
+                                counted = True 
                             i += 2
                         else:
                             new_per_token_list.append(per_token_tuple2[i])
@@ -91,7 +115,7 @@ def train_bpe(input_path:str,
             else:
                 new_count[new_per_token_tuple] = count[per_token_tuple2]
         count = new_count
-                            
+        print(f"total:{total}", f"total_length: {total_length}", f"affected:{affected}", f"affected_length:{affected_length}")
     #最后加上特殊符号
     for special_token in special_tokens:
         vocab[len(vocab)] = special_token.encode("utf-8")#str->bytes

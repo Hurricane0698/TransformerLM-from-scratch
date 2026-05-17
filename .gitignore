@@ -6,6 +6,10 @@ __pycache__/
 .ruff_cache/
 .mypy_cache/
 
+# Local scratch files
+/1.py
+/try.ipynb
+
 # Local model checkpoints and generated artifacts
 *.pth
 *.pt
@@ -16,6 +20,16 @@ checkpoints/
 datasets/
 runs/
 wandb/
+
+# Ignore upstream CS336 scaffold; keep only tracked work files visible.
+cs336/ass1/assignment1-basics/*
+!cs336/ass1/assignment1-basics/cs336_basics/
+!cs336/ass1/assignment1-basics/tests/
+cs336/ass1/assignment1-basics/cs336_basics/*
+!cs336/ass1/assignment1-basics/cs336_basics/train_bpe.py
+cs336/ass1/assignment1-basics/tests/*
+!cs336/ass1/assignment1-basics/tests/adapters.py
+!cs336/ass1/assignment1-basics/tests/test_train_bpe.py
 
 # External course/source materials cloned for local study
 cs336/lectures/
