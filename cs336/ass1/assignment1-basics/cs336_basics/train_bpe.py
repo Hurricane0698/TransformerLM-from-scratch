@@ -44,7 +44,7 @@ def train_bpe(input_path:str,
     merge_list = []
     while len(vocab) < vocab_size-len(special_tokens):
         pair_counts = {} #{(b'a', b'b'):x}
-        pair_to_words = {}#{(b'a', b'b'):set((b'a', b'b', b'c'),(b'g', b'a', b'b')),....}
+        pair_to_words = {}#{(b'a', b'b'):set((b'a', b'b', b'c'),(b'g', b'a', b'b'),....)}
         #统计次数比先统计长度判断是否还有两个以上元素更好，因为没有次数就没有两个以上的元素，最终落点是在次数判断上。
         for per_token_tuple in count:
             if len(per_token_tuple) >= 2:#先判断元组不是单元素
@@ -78,44 +78,29 @@ def train_bpe(input_path:str,
             expected = best_pair[0] + best_pair[1] #b'ab'
         vocab[len(vocab)] = expected
         merge_list.append(best_pair)
-        new_count = {}
-        #定量评估扫描重建new_count的消费
-        total = len(count.keys())
-        total_length = 0
-        affected = 0
-        affected_length = 0
-        affected_words = pair_to_words[best_pair]
-        for per_token_tuple2 in count:
-            total_length += len(per_token_tuple2)
-            if len(per_token_tuple2) >= 2:
-                #维护一个判断指针，来判断是否计数。是的话跳过，否的化计数。防止重复计数
-                counted = False
-                new_per_token_list = []
+        #对于影响的word，定向merge best_pair
+        affected_words = pair_to_words[best_pair] #sset((b'a', b'b', b'c'),(b'g', b'a', b'b'),....)
+        affected_words_snapshot = affected_words
+        for affected_word in affected_words_snapshot:
                 i = 0
-                while i <= len(per_token_tuple2)-1:
-                    if i <= len(per_token_tuple2) - 2:
-                        if best_pair == tuple([per_token_tuple2[i], per_token_tuple2[i+1]]):
+                new_per_token_list = []
+                while i <= len(affected_word)-1:
+                    if i <= len(affected_word) - 2:
+                        if best_pair == tuple([affected_word[i], affected_word[i+1]]):
                             new_per_token_list.append(expected)
-                            if counted == False:
-                                affected += 1
-                                affected_length += len(per_token_tuple2)
-                                counted = True 
                             i += 2
                         else:
-                            new_per_token_list.append(per_token_tuple2[i])
+                            new_per_token_list.append(affected_word[i])
                             i += 1
-                    elif i == len(per_token_tuple2)-1:
-                        new_per_token_list.append(per_token_tuple2[i])
+                    elif i == len(affected_word)-1:
+                        new_per_token_list.append(affected_word[i])
                         i += 1
                 new_per_token_tuple = tuple(new_per_token_list)
-            else:
-                new_per_token_tuple = per_token_tuple2
-            if new_per_token_tuple in new_count:
-                new_count[new_per_token_tuple] += count[per_token_tuple2]
-            else:
-                new_count[new_per_token_tuple] = count[per_token_tuple2]
-        count = new_count
-        print(f"total:{total}", f"total_length: {total_length}", f"affected:{affected}", f"affected_length:{affected_length}")
+                freq = count.pop(affected_word)#方法2：freq = count[affected_word] del count[affected_word],注意pop输入是key
+                if new_per_token_tuple in count:
+                    count[new_per_token_tuple] += freq
+                else:
+                    count[new_per_token_tuple] = freq
     #最后加上特殊符号
     for special_token in special_tokens:
         vocab[len(vocab)] = special_token.encode("utf-8")#str->bytes
