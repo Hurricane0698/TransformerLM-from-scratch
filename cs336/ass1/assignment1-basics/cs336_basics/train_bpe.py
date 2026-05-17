@@ -42,11 +42,10 @@ def train_bpe(input_path:str,
             else:
                 count[pre_token_tuple] = 1
     merge_list = []
-    while len(vocab) < vocab_size-len(special_tokens):
-        pair_counts = {} #{(b'a', b'b'):x}
-        pair_to_words = {}#{(b'a', b'b'):set((b'a', b'b', b'c'),(b'g', b'a', b'b'),....)}
-        #统计次数比先统计长度判断是否还有两个以上元素更好，因为没有次数就没有两个以上的元素，最终落点是在次数判断上。
-        for per_token_tuple in count:
+    #pair_counts、xxto_words放在外面，进行维护更新
+    pair_counts = {} #{(b'a', b'b'):x}
+    pair_to_words = {}#{(b'a', b'b'):set((b'a', b'b', b'c'),(b'g', b'a', b'b'),....)}
+    for per_token_tuple in count: #(b'a', b'c', b'd')
             if len(per_token_tuple) >= 2:#先判断元组不是单元素
                 for i in range(0, len(per_token_tuple)-1):
                         sub_tuple = tuple([per_token_tuple[i], per_token_tuple[i+1]])
@@ -60,6 +59,8 @@ def train_bpe(input_path:str,
                             pair_counts[sub_tuple] = count[per_token_tuple] 
             else:
                 continue
+    while len(vocab) < vocab_size-len(special_tokens):
+        #统计次数比先统计长度判断是否还有两个以上元素更好，因为没有次数就没有两个以上的元素，最终落点是在次数判断上。
         if not pair_counts:#if pair_counts is None 判断不对,pair_counts 初始化为 {}，没有 pair 时它是空 dict，不是 None。
             break
         max_counts = max(pair_counts.values())
@@ -79,11 +80,39 @@ def train_bpe(input_path:str,
         vocab[len(vocab)] = expected
         merge_list.append(best_pair)
         #对于影响的word，定向merge best_pair
-        affected_words = pair_to_words[best_pair] #sset((b'a', b'b', b'c'),(b'g', b'a', b'b'),....)
-        affected_words_snapshot = affected_words
+        affected_words = pair_to_words[best_pair] #set((b'a', b'b', b'c'),(b'g', b'a', b'b'),....)
+        affected_words_snapshot = pair_to_words[best_pair].copy()
         for affected_word in affected_words_snapshot:
                 i = 0
+                c = 0
+                old_pairs = set()
+                for p in range(len(affected_word)-1):
+                    if p <= len(affected_word) - 2:
+                        key = tuple([affected_word[p], affected_word[p+1]])
+                        old_pairs.add(key)
+                for k in old_pairs:
+                    pair_to_words[k].remove(affected_word)
+                    if not pair_to_words[k]:#if pair_to_words[key] == set():语义正确但是会创建一个新空set()
+                        del pair_to_words[k]
+                #先把旧的key退掉affected word,用unique old pair的思路
+                '''for p in range(len(affected_word)-1):
+                    if p <= len(affected_word) - 2:
+                        key = tuple([affected_word[p], affected_word[p+1]])
+                        if affected_word in pair_to_words[key]:
+                            pair_to_words[key].remove(affected_word)
+                        '''
+                #先读贡献，再撤销pair在pair_counts里的贡献
+                frequncy = count[affected_word]
                 new_per_token_list = []
+                while c <= len(affected_word) - 1:
+                    if c <= len(affected_word) -2:
+                        pair = tuple([affected_word[c], affected_word[c+1]])
+                        pair_counts[pair] -= frequncy
+                        if pair_counts[pair] == 0:#如果值已经清零就删掉
+                            del pair_counts[pair]
+                        c += 1
+                    else:
+                        c += 1
                 while i <= len(affected_word)-1:
                     if i <= len(affected_word) - 2:
                         if best_pair == tuple([affected_word[i], affected_word[i+1]]):
@@ -96,6 +125,17 @@ def train_bpe(input_path:str,
                         new_per_token_list.append(affected_word[i])
                         i += 1
                 new_per_token_tuple = tuple(new_per_token_list)
+                #使用新的new_per_token_tuple计算新的贡献并更新pair_counts、pair_to_words
+                for i in range(len(new_per_token_tuple)-1):
+                    if i <= len(new_per_token_tuple) - 2:
+                        new_pair = tuple([new_per_token_tuple[i], new_per_token_tuple[i+1]])#(b'ab', b'c')
+                        if new_pair not in pair_to_words:
+                            pair_to_words[new_pair] = set()
+                        pair_to_words[new_pair].add(new_per_token_tuple)
+                        if new_pair in pair_counts:
+                            pair_counts[new_pair] += frequncy
+                        else:
+                            pair_counts[new_pair] = frequncy
                 freq = count.pop(affected_word)#方法2：freq = count[affected_word] del count[affected_word],注意pop输入是key
                 if new_per_token_tuple in count:
                     count[new_per_token_tuple] += freq
