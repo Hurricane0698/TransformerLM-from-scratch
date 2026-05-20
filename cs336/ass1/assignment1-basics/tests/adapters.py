@@ -28,8 +28,10 @@ def run_linear(
     Returns:
         Float[Tensor, "... d_out"]: The transformed output of your linear module.
     """
-
-    raise NotImplementedError
+    from cs336_basics.TransformerLM import Linear
+    linear = Linear(d_in, d_out)
+    linear.load_state_dict({"weight": weights})
+    return linear(in_features)
 
 
 def run_embedding(
@@ -50,8 +52,10 @@ def run_embedding(
     Returns:
         Float[Tensor, "... d_model"]: Batch of embeddings returned by your Embedding layer.
     """
-
-    raise NotImplementedError
+    from cs336_basics.TransformerLM import Embedding
+    embedding = Embedding(vocab_size, d_model)
+    embedding.load_state_dict({"weight":weights})
+    return embedding(token_ids)
 
 
 def run_swiglu(
@@ -378,8 +382,10 @@ def run_rmsnorm(
         Float[Tensor,"... d_model"]: Tensor of with the same shape as `in_features` with the output of running
         RMSNorm of the `in_features`.
     """
-    raise NotImplementedError
-
+    from cs336_basics.TransformerLM import RMSNorm
+    norm_layer = RMSNorm(d_model, eps)
+    norm_layer.load_state_dict({"gain": weights})
+    return norm_layer(in_features)
 
 def run_silu(in_features: Float[Tensor, " ..."]) -> Float[Tensor, " ..."]:
     """Given a tensor of inputs, return the output of applying SiLU
@@ -561,8 +567,6 @@ def get_tokenizer(
     """
     from cs336_basics.tokenizer import Tokenizer
     return Tokenizer(vocab, merges=merges, special_tokens=special_tokens)
-    raise NotImplementedError
-
 
 def run_train_bpe(
     input_path: str | os.PathLike,
@@ -598,4 +602,3 @@ def run_train_bpe(
     vocab_size=vocab_size,
     special_tokens=special_tokens,
     )
-    raise NotImplementedError
