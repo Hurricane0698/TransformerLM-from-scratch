@@ -61,3 +61,45 @@ class SwiGLU(nn.Module):
         gate = (activate)*torch.sigmoid(activate) #[..., dff]
         gated_x = gate * (self.w3(x))
         return self.w2(gated_x)
+
+class RotaryPositionalEmbedding(nn.Module):
+    def __init__(self, theta:float, d_k:int, max_seq_length:int, device:torch.device|None = None) -> None:
+        super().__init__()
+        #先写cos,sin和theta组成的通用表达式
+        seq_index = torch.arange(max_seq_length, device=device).unsqueeze(1)#[s, 1]
+        d_k_index = torch.arange(d_k//2, device=device).unsqueeze(0)#[1, d_k/2]
+        freq = 1 / theta**(2*d_k_index/d_k)
+        #用广播而不是矩阵乘法，广播时从右往左对齐，其中一个维度要么是1要么两个维度相同，维度为1的部分复制乘上其他部分
+        angle = seq_index * freq
+        self.register_buffer("cos_table", angle.cos())
+        self.register_buffer("sin_table", angle.sin())
+    def forward(self, x:torch.Tensor, token_positions:torch.Tensor) -> torch.Tensor:
+        cos = self.cos_table[token_positions]#[b, s, d/2]
+        sin = self.sin_table[token_positions]
+        #把x[...,d]拆成偶数、奇数数列：[...,d/2]
+        x_even = x[..., 0::2]#[...,start::step]
+        x_odd = x[..., 1::2]
+        new_even = cos*x_even - sin*x_odd
+        new_odd = sin*x_even + cos*x_odd
+        out = torch.empty_like(x) #创建空矩阵，把算好的放进来
+        out[..., 0::2] = new_even
+        out[..., 1::2] = new_odd
+        return out
+
+def softmax(x:torch.Tensor, dim:int):
+    max_x = x.max(dim,keepdim=True).values#max return tuple style values、indices
+    norm_x = x - max_x
+    exp_x = norm_x.exp()
+    return exp_x / exp_x.sum(dim, keepdim=True)
+
+def scaled_dot_product_attention(queries:torch.Tensor, 
+                                 keys:torch.Tensor, 
+                                 values:torch.Tensor, 
+                                 mask:torch.Tensor|None = None)->torch.Tensor:
+    d_k = keys.shape[-1]
+    attn_w = queries @ keys.transpose(-1,-2) /d_k**0.5 #[b,..., n, d_k],[b,..., d_k, m]->[b,..., n, m]
+    if mask is not None:
+        attn_w.masked_fill_(~mask, -torch.inf)#True保留，先反转
+    attn_s = softmax(attn_w, -1)
+    context_vec = attn_s @ values #[b,..., n, d_v]
+    return context_vec
