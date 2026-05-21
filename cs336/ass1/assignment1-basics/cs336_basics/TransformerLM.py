@@ -39,3 +39,25 @@ class RMSNorm(nn.Module):
         rms = (torch.sum(x**2, -1, keepdim=True)/ self.d_model + self.eps)**0.5#[b, s, 1]
         norm_x = x / rms *self.gain
         return norm_x.to(input_dtype)
+
+class SwiGLU(nn.Module):
+    def __init__(self, d_model:int, d_ff:int|None = None) -> None:
+        super().__init__()
+        #设置3个可学习的参数矩阵，利用SiLU(𝑥) = 𝑥 ⋅ 𝜎(𝑥) = 𝑥/(1 + 𝑒−𝑥)激活当作GLU门控元素逐一相乘，fnn内部隐藏层设计为8/3的d_model,取相邻的64倍整数
+        if d_ff is None:
+            self.d_ff = 8/3*d_model
+            if self.d_ff % 64 != 0:
+                r = round(self.d_ff/64)#取最近的64整数因子
+                self.d_ff = 64*r
+            else:
+                self.d_ff = int(self.d_ff)
+        else:
+            self.d_ff = d_ff
+        self.w1 = Linear(d_model, self.d_ff)
+        self.w2 = Linear(self.d_ff, d_model)
+        self.w3 = Linear(d_model, self.d_ff)
+    def forward(self, x:torch.Tensor)->torch.Tensor:
+        activate = self.w1(x)
+        gate = (activate)*torch.sigmoid(activate) #[..., dff]
+        gated_x = gate * (self.w3(x))
+        return self.w2(gated_x)
