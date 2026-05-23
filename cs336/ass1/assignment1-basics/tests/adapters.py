@@ -8,6 +8,7 @@ import numpy.typing as npt
 import torch
 from jaxtyping import Bool, Float, Int
 from torch import Tensor
+from cs336_basics.loss_optimizer import cross_entropy, AdamW
 from cs336_basics.TransformerLM import Linear, Embedding, RMSNorm, SwiGLU, RotaryPositionalEmbedding,softmax,scaled_dot_product_attention,MutiHeadCausalAttention,TransformerBlock,TransformerLM
 def run_linear(
     d_in: int,
@@ -470,7 +471,8 @@ def run_cross_entropy(
     Returns:
         Float[Tensor, ""]: The average cross-entropy loss across examples.
     """
-    raise NotImplementedError
+    l_t = cross_entropy(inputs, targets)
+    return l_t
 
 
 def run_gradient_clipping(parameters: Iterable[torch.nn.Parameter], max_l2_norm: float) -> None:
@@ -489,7 +491,7 @@ def get_adamw_cls() -> Any:
     """
     Returns a torch.optim.Optimizer that implements AdamW.
     """
-    raise NotImplementedError
+    return AdamW
 
 
 def run_get_lr_cosine_schedule(
