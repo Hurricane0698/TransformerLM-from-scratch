@@ -1,5 +1,6 @@
 import torch
 import torch.nn as nn
+import math
 from typing import Any, Optional
 from collections.abc import Iterable, Callable
 from jaxtyping import Bool, Float, Int
@@ -64,3 +65,33 @@ class AdamW(torch.optim.Optimizer):
                 state["m"] = m
                 state["v"] = v
         return loss
+
+def learning_rate_schedule(t:int, 
+                           max_learning_rate:float, 
+                           min_learning_rate:float, 
+                           T_w:int, 
+                           T_c:int):
+    if t < T_w:
+        lr_t = (t / T_w) * max_learning_rate
+    
+    elif T_w <= t <= T_c:
+        lr_t = min_learning_rate + 1/2*(max_learning_rate - min_learning_rate)*(1 + math.cos((t - T_w)/(T_c - T_w)*math.pi))
+    
+    else: 
+        lr_t = min_learning_rate
+    
+    return lr_t
+
+def gradient_clipping(parameters: Iterable[torch.nn.Parameter], max_l2_norm: float):
+    total = 0
+    for parameter in parameters:
+        if parameter.grad is None:
+            continue
+        part = reduce((parameter.grad)**2, "... -> ", "sum")#不绕过auto_grad修改data，因为这里没有梯度追踪
+        total += part
+    sqrt_total = total**0.5
+    if sqrt_total > max_l2_norm:
+        for parameter in parameters:
+            if parameter.grad is None:
+                continue
+            parameter.grad.mul_((max_l2_norm / (sqrt_total + 1e-6)))#原地修改方法是后面加个_, grad有add,mul方法
