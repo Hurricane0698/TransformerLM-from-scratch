@@ -2,6 +2,8 @@ from cs336_basics.Training import save_checkpoint, load_checkpoint, data_loading
 from cs336_basics.TransformerLM import TransformerLM
 from cs336_basics.loss_optimizer import cross_entropy, gradient_clipping, learning_rate_schedule, AdamW
 import argparse
+import numpy as np
+import torch
 '''
 语义层
 输入：path, data, 超参数集：模型超参数、优化器超参数、训练数据集设置
@@ -36,7 +38,7 @@ loss评估当前状态，永不参与模型训练，验证集必须分开验证
 观察流：
 每隔一段时间，
 记录训练进度：步数在哪，学习率是否正常（用于诊断异常情况），在train集和validation集的loss情况，savepoint保存点状态显性提示（用于恢复特定历史状态）
-，记录看到的token数量，用于绘图
+，记录看到的token数量(这个没有保存，看不了)，用于绘图
 
 恢复：用loadcheckpoint函数载入特定路径的数据，拿到训练步数，继续训练
 配置：用argparse构建命令行参数'''
@@ -88,6 +90,7 @@ def build_argparser():
     # -------------------------
     parser.add_argument("--batch-size", type=int, default=32)
     parser.add_argument("--num-iters", type=int, default=10000)
+    parser.add_argument("--warmup-iters", type=int, default=100)
     parser.add_argument("--eval-interval", type=int, default=100)
     parser.add_argument("--save-interval", type=int, default=1000)
     parser.add_argument("--device", type=str, default="cuda")
@@ -95,6 +98,8 @@ def build_argparser():
     # Number of batches used to estimate train/valid loss during eval
     parser.add_argument("--eval-iters", type=int, default=10)
 
+    # Max l2 norm used by gradient clipping
+    parser.add_argument("--max-grad-norm", type=float, default=1.0)
     # -------------------------
     # Checkpointing
     # -------------------------
@@ -114,9 +119,71 @@ def build_argparser():
     return parser
 
 def main(args):
-    #待写
+    #先实例化模型和优化器，优化器学习率不变量，事务在更新参数前完成，必须反映当前步数的学习率
+    model = TransformerLM(args.vocab_size, args.context_length, args.d_model, 
+                          args.num_layers, args.num_heads, args.d_ff, args.rope_theta)
+    device = args.device
+    model = model.to(device)
+    optimizer = AdamW(model.parameters(), args.lr, (args.beta1, args.beta2), args.weight_decay, args.eps)
+    #准备数据集，先从路径memmp载入训练和验证数据
+    train_data = np.load(args.train_data, 'r')
+    valid_data = np.load(args.valid_data, 'r')
+    #training 参数
+    target_steps = args.num_iters
+    batch_size = args.batch_size
+    context_length = args.context_length
+    eval_interval = args.eval_interval
+    save_interval = args.save_interval
+    eval_iters = args.eval_iters
+    warmup_iters = args.warmup_iters
+    max_lr = args.lr
+    min_lr = args.min_lr
+    save_path = args.checkpoint_out
+    max_l2_norm = args.max_grad_norm
+    assert warmup_iters < target_steps, "warmup_iters must smaller than num_iters"
+    assert eval_iters > 0, "eval_iters must be positive"
+    assert eval_interval > 0, "eval_interval must be positive"
+    if args.checkpoint_in is not None:
+        global_steps = load_checkpoint(args.checkpoint_in, model, optimizer)
+    else:
+        global_steps = 0
+    #开始训练循环
+    while global_steps < target_steps:
+        #事务更新optimizer学习率
+        lr_t = learning_rate_schedule(global_steps, max_lr, min_lr, warmup_iters, target_steps)
+        for group in optimizer.param_groups:
+            group["lr"] = lr_t
 
-
+        #训练
+        model.train()
+        model.zero_grad()
+        inputs, targets = data_loading(train_data, batch_size, context_length, device)
+        logits = model(inputs)
+        loss = cross_entropy(logits, targets)
+        loss.backward()
+        gradient_clipping(model.parameters(), max_l2_norm)
+        optimizer.step()
+        global_steps += 1
+        #评估
+        if global_steps % eval_interval == 0:
+            model.eval()
+            with torch.no_grad():
+                train_total_loss = 0
+                valid_total_loss = 0
+                for _ in range(eval_iters):
+                    train_inputs, train_targets = data_loading(train_data, batch_size, context_length, device)
+                    valid_inputs, valid_targets = data_loading(valid_data, batch_size, context_length, device)
+                    train_total_loss += cross_entropy(model(train_inputs), train_targets)
+                    valid_total_loss += cross_entropy(model(valid_inputs), valid_targets)
+                train_loss = train_total_loss / eval_iters
+                valid_loss = valid_total_loss / eval_iters
+            print(f"Step:{global_steps}", f"Train Loss:{train_loss}", f"Valid Loss:{valid_loss}", f"Learning Rate:{lr_t}")
+        #保存
+        if global_steps % save_interval == 0:
+            save_checkpoint(model, optimizer, global_steps, save_path)
+            print(f"Save state to {save_path}")
+    save_checkpoint(model, optimizer, target_steps, save_path)
+    print(f"Save state to {save_path}, training finish")
 
 if __name__ == "__main__":
     args = build_argparser().parse_args()

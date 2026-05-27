@@ -13,7 +13,7 @@ def cross_entropy(inputs: Float[Tensor, " ... vocab_size"], targets: Int[Tensor,
     max_logits = reduce(inputs, 'N vocab_size -> N 1', "max")
     stab_inputs = inputs - max_logits
     #arange device 默认cpu
-    target_logits = stab_inputs[ torch.arange(targets.shape[0]), targets].unsqueeze(1)#stab_input.gather(1, targets.unsqueeze(1))
+    target_logits = stab_inputs[ torch.arange(targets.shape[0],device=inputs.device), targets].unsqueeze(1)#stab_input.gather(1, targets.unsqueeze(1))
     l_t = torch.log(reduce(torch.exp(stab_inputs), 'N vocab_size -> N 1', "sum")) - target_logits
     avg_l = reduce(l_t, 'N 1-> ', "mean")
     return avg_l
@@ -83,6 +83,8 @@ def learning_rate_schedule(t:int,
     return lr_t
 
 def gradient_clipping(parameters: Iterable[torch.nn.Parameter], max_l2_norm: float):
+    #先转为可以多次遍历的列表，传入iterator时可用
+    parameters = list(parameters)
     total = 0
     for parameter in parameters:
         if parameter.grad is None:
