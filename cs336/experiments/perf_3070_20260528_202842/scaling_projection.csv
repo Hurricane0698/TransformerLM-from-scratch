@@ -1,0 +1,4 @@
+scenario,target_tokens,tokens_per_second,estimated_minutes,speedup_vs_3070
+RTX 3070 Laptop measured end-to-end,327680000,21891.360,249.474,1.000
+B200 assignment reference 20 min,327680000,273066.667,20.000,12.474
+B200 assignment reference 30 min,327680000,182044.444,30.000,8.316

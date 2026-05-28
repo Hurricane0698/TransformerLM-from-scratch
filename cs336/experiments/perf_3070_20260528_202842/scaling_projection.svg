@@ -1,0 +1,71 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="720" viewBox="0 0 1200 720">
+<rect width="1200" height="720" fill="#FFFFFF"/>
+<style>text{font-family:Inter,Arial,sans-serif}.title{font-size:30px;font-weight:750;fill:#172026}.subtitle{font-size:15px;fill:#667085}.paneltitle{font-size:18px;font-weight:700;fill:#172026}.axis{font-size:12px;fill:#667085}.label{font-size:13px;font-weight:650;fill:#344054}.value{font-size:15px;font-weight:750;fill:#172026}.note{font-size:13px;fill:#667085}.callout{font-size:15px;font-weight:700;fill:#172026}.small{font-size:12px;fill:#667085}</style>
+<text x="64" y="44" class="title">Runtime Projection From Local 3070 Measurements</text>
+<text x="64" y="72" class="subtitle">Target budget: 327.68M training tokens. Projection uses measured end-to-end throughput, not a loss scaling law.</text>
+<rect x="64" y="96" width="1072" height="64" rx="8" fill="#F8FAFC" stroke="#E2E8F0"/>
+<text x="86" y="123" class="callout">Measured RTX 3070 Laptop:</text>
+<text x="286" y="123" class="callout">21,891 tokens/sec</text>
+<text x="86" y="147" class="note">40.96M tokens in 31.2 min; linear projection to 327.68M tokens is 249.5 min (4.16 h).</text>
+<text x="690" y="123" class="callout">B200 reference gap:</text>
+<text x="862" y="123" class="callout">8.3x - 12.5x</text>
+<text x="690" y="147" class="note">Throughput needed for 30-20 min: 182,044 - 273,067 tokens/sec.</text>
+<text x="84" y="196" class="paneltitle">A. Projected runtime</text>
+<text x="84" y="214" class="note">Minutes to process the same 327.68M-token budget</text>
+<line x1="84" y1="550.00" x2="564" y2="550.00" stroke="#E5E7EB"/>
+<text x="74" y="554.00" text-anchor="end" class="axis">0</text>
+<line x1="84" y1="486.54" x2="564" y2="486.54" stroke="#E5E7EB"/>
+<text x="74" y="490.54" text-anchor="end" class="axis">50</text>
+<line x1="84" y1="423.08" x2="564" y2="423.08" stroke="#E5E7EB"/>
+<text x="74" y="427.08" text-anchor="end" class="axis">100</text>
+<line x1="84" y1="359.62" x2="564" y2="359.62" stroke="#E5E7EB"/>
+<text x="74" y="363.62" text-anchor="end" class="axis">150</text>
+<line x1="84" y1="296.15" x2="564" y2="296.15" stroke="#E5E7EB"/>
+<text x="74" y="300.15" text-anchor="end" class="axis">200</text>
+<line x1="84" y1="232.69" x2="564" y2="232.69" stroke="#E5E7EB"/>
+<text x="74" y="236.69" text-anchor="end" class="axis">250</text>
+<rect x="149" y="233.36" width="80" height="316.64" rx="5" fill="#7C3AED"/>
+<text x="189.0" y="223.36" text-anchor="middle" class="value">249.5 min</text>
+<text x="189.0" y="576" text-anchor="middle" class="axis">Measured</text>
+<text x="189.0" y="592" text-anchor="middle" class="axis">RTX 3070</text>
+<rect x="299" y="511.92" width="80" height="38.08" rx="5" fill="#059669"/>
+<text x="339.0" y="501.92" text-anchor="middle" class="value">30.0 min</text>
+<text x="339.0" y="576" text-anchor="middle" class="axis">B200 ref</text>
+<text x="339.0" y="592" text-anchor="middle" class="axis">30 min</text>
+<rect x="449" y="524.62" width="80" height="25.38" rx="5" fill="#2563EB"/>
+<text x="489.0" y="514.62" text-anchor="middle" class="value">20.0 min</text>
+<text x="489.0" y="576" text-anchor="middle" class="axis">B200 ref</text>
+<text x="489.0" y="592" text-anchor="middle" class="axis">20 min</text>
+<line x1="84" y1="550" x2="564" y2="550" stroke="#98A2B3"/>
+<line x1="84" y1="220" x2="84" y2="550" stroke="#98A2B3"/>
+<text transform="translate(30 385.0) rotate(-90)" text-anchor="middle" class="label">Minutes</text>
+<text x="662" y="196" class="paneltitle">B. Required throughput</text>
+<text x="662" y="214" class="note">Tokens/sec needed for each runtime target</text>
+<line x1="662.00" y1="220" x2="662.00" y2="550" stroke="#E5E7EB"/>
+<text x="662.00" y="574" text-anchor="middle" class="axis">0k</text>
+<line x1="736.14" y1="220" x2="736.14" y2="550" stroke="#E5E7EB"/>
+<text x="736.14" y="574" text-anchor="middle" class="axis">50k</text>
+<line x1="810.28" y1="220" x2="810.28" y2="550" stroke="#E5E7EB"/>
+<text x="810.28" y="574" text-anchor="middle" class="axis">100k</text>
+<line x1="884.41" y1="220" x2="884.41" y2="550" stroke="#E5E7EB"/>
+<text x="884.41" y="574" text-anchor="middle" class="axis">150k</text>
+<line x1="958.55" y1="220" x2="958.55" y2="550" stroke="#E5E7EB"/>
+<text x="958.55" y="574" text-anchor="middle" class="axis">200k</text>
+<line x1="1032.69" y1="220" x2="1032.69" y2="550" stroke="#E5E7EB"/>
+<text x="1032.69" y="574" text-anchor="middle" class="axis">250k</text>
+<text x="652" y="280" text-anchor="end" class="axis">Measured RTX 3070</text>
+<rect x="662" y="262" width="32.46" height="34" rx="5" fill="#7C3AED"/>
+<text x="704.46" y="284" class="value">21.9k tok/s</text>
+<text x="652" y="362" text-anchor="end" class="axis">B200 ref 30 min</text>
+<rect x="662" y="344" width="269.93" height="34" rx="5" fill="#059669"/>
+<text x="941.93" y="366" class="value">182.0k tok/s</text>
+<text x="941.93" y="386" class="small">8.3x measured 3070</text>
+<text x="652" y="444" text-anchor="end" class="axis">B200 ref 20 min</text>
+<rect x="662" y="426" width="404.89" height="34" rx="5" fill="#2563EB"/>
+<text x="1076.89" y="448" class="value">273.1k tok/s</text>
+<text x="1076.89" y="468" class="small">12.5x measured 3070</text>
+<line x1="662" y1="550" x2="1092" y2="550" stroke="#98A2B3"/>
+<text x="877.0" y="642" text-anchor="middle" class="label">Required end-to-end throughput (tokens/sec)</text>
+<rect x="64" y="632" width="1072" height="46" rx="8" fill="#FFF7ED" stroke="#FED7AA"/>
+<text x="86" y="658" class="note">Interpretation: this compares runtime budgets under one measured implementation. It does not claim equivalent utilization, hardware efficiency, or loss quality across GPUs.</text>
+</svg>

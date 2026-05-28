@@ -1,0 +1,33 @@
+{
+  "run_dir": "cs336/experiments/perf_3070_20260528_202842",
+  "target_tokens": 327680000,
+  "observed_tokens": 40960000,
+  "observed_elapsed_seconds": 1871.0577996119973,
+  "observed_tokens_per_second": 21891.36006834952,
+  "projected_3070_minutes_for_target_tokens": 249.47437328159967,
+  "projected_3070_hours_for_target_tokens": 4.157906221359995,
+  "tokens_per_step": 4096,
+  "gpu_rows": 1760,
+  "gpu_log_duration_seconds": 1770.708,
+  "gpu_active_rows_util_ge_50": 1750,
+  "gpu_util_mean_active": 95.08285714285714,
+  "gpu_util_median_active": 96.0,
+  "gpu_power_w_mean_active": 101.80893142857143,
+  "gpu_temp_c_median_active": 86.0,
+  "gpu_temp_c_max": 87.0,
+  "gpu_mem_used_gib_median_active": 3.251953125,
+  "gpu_mem_used_gib_max": 4.494140625,
+  "sm_clock_mhz_median_active": 1335.0,
+  "b200_reference": [
+    {
+      "minutes": 20,
+      "required_tokens_per_second": 273066.6666666667,
+      "speedup_vs_measured_3070": 12.473718664079984
+    },
+    {
+      "minutes": 30,
+      "required_tokens_per_second": 182044.44444444444,
+      "speedup_vs_measured_3070": 8.315812442719988
+    }
+  ]
+}
