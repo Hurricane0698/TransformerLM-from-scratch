@@ -58,7 +58,7 @@ class Tokenizer:
                                     best_rank = candidate_rank
                                 elif candidate_rank < best_rank:
                                     merge_pair = candidate_pair
-                                    best_rank = candidate_rank
+                                    best_rank = candidate_rank #这里我前面纯按bpe逻辑套，不行，还是想想条件变没变
                         #第二步：如果有，用mergepair替换list中所有相邻符合项
                         if merge_pair is not None:
                             i = 0
@@ -76,6 +76,7 @@ class Tokenizer:
         return ids 
     def encode_iterable(self, iterable: Iterable[str]) -> Iterator[int]:
         buffer = ""
+        #最重要的思想是保守处理，而不是算法预测所有情况
         for chunk in iterable:
             buffer += chunk
             #对buffer进行special token处理，然后对最后一个内容前面的进行join
@@ -92,15 +93,15 @@ class Tokenizer:
                 continue
             #buffer里有被截断的special_token,得从长到短判断
             held_suffix = None
-
+            #先拿
             if self.special_tokens:
                 limit = min(len(buffer), max_special_len - 1)
-                for suffix_len in range(limit, 0, -1):
-                    suffix = buffer[-suffix_len:]
-                    if any(special_token.startswith(suffix) for special_token in self.special_tokens):
+                for suffix_len in range(limit, 0, -1):#降序实现方法，重点
+                    suffix = buffer[-suffix_len:] #反向表示倒数多少个，重点
+                    if any(special_token.startswith(suffix) for special_token in self.special_tokens):#any代替正常繁琐循环，重点
                         held_suffix = suffix
                         break
-
+            #再算，同时维护buffer不变量
             if held_suffix is not None:
                 safe_text = buffer[:-len(held_suffix)]
                 buffer = held_suffix
@@ -108,7 +109,7 @@ class Tokenizer:
                 continue
             matches = list(re.finditer(self.pat, buffer))
             if len(matches) >= 2:
-                safe_end = matches[-1].start()
+                safe_end = matches[-1].start() #match的三个方法：group()是内容，start()是原内容的开始索引,end()是结束索引
                 safe_text = buffer[:safe_end]
                 buffer = buffer[safe_end:]
                 yield from self.encode(safe_text) #yield from很好用，直接把可迭代对象内容逐个吐出去
@@ -122,3 +123,4 @@ class Tokenizer:
             bytes += self.i2b[token_id]
         text = bytes.decode(errors="replace")
         return text
+    #git add -f强制加入被忽略的内容

@@ -31,5 +31,12 @@ cs336/ass1/assignment1-basics/tests/*
 !cs336/ass1/assignment1-basics/tests/adapters.py
 !cs336/ass1/assignment1-basics/tests/test_train_bpe.py
 
+# Ignore upstream CS336 Assignment 2 scaffold; keep implementation and writeup visible.
+cs336/ass2/assignment2-systems/*
+!cs336/ass2/assignment2-systems/cs336_systems/
+!cs336/ass2/assignment2-systems/cs336_systems/**
+!cs336/ass2/assignment2-systems/Write_up/
+!cs336/ass2/assignment2-systems/Write_up/**
+
 # External course/source materials cloned for local study
 cs336/lectures/

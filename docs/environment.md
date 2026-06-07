@@ -39,20 +39,6 @@ small idea. Instead:
 - store large artifacts under ignored directories such as `artifacts/`,
   `checkpoints/`, `datasets/`, or `runs/`.
 
-When disk pressure appears, inspect usage before deleting anything:
-
-```bash
-du -sh .venv ~/.cache/uv cs336/lectures from-scratch-book/artifacts
-```
-
-Useful cleanup targets:
-
-```bash
-uv cache prune
-```
-
-Do not delete `.venv` unless the project environment needs to be rebuilt. It is
-the main long-lived LLM research environment.
 
 ## Common Commands
 

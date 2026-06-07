@@ -6,7 +6,7 @@
 
 BPE merge 只能发生在 pre-token 内部。每一轮统计当前 token 序列里的相邻 pair 频率，选择频率最高的 pair；若并列，则选择字典序更大的 pair；然后把所有该 pair 的出现合并成新 token，加入 vocab，并重复直到达到 vocab_size。'''
 import regex as re
-from pretokenization_example import find_chunk_boundaries
+from cs336_basics.pretokenization_example import find_chunk_boundaries
 from collections import Counter
 from concurrent.futures import ProcessPoolExecutor
 from pathlib import Path
@@ -36,8 +36,8 @@ def train_bpe(input_path:str, vocab_size:int, special_tokens:list) -> tuple[dict
     vocab = {i : bytes([i]) for i in range(256)}
     #打开路径获得数据集，确定边界，把jobs下发给子进程
     with open(input_path, "rb") as f:
-        num_workers = 8
-        desired_num_chunks = num_workers * 4
+        num_workers = 12
+        desired_num_chunks = num_workers * 8
         boundaries = find_chunk_boundaries(f, desired_num_chunks, b"<|endoftext|>")
     total_counts = Counter()
     jobs = [(input_path, start, end, special_tokens)
@@ -158,13 +158,13 @@ pair_to_words: 当前 pair -> 包含它的 token tuple 集合
 '''
 if __name__ == "__main__":
     BASE_DIR = Path(__file__).resolve().parent
-    input_path = BASE_DIR.parent / "data" / "TinyStoriesV2-GPT4-train.txt"
-    vocab, merge_list = train_bpe(str(input_path), 10000, ["<|endoftext|>"])
+    input_path = BASE_DIR.parent / "data" / "owt_train.txt"
+    vocab, merge_list = train_bpe(str(input_path), 32000, ["<|endoftext|>"])
 
-    with open("tinystories_vocab.pkl", "wb") as f:
+    with open("owt_vocab.pkl", "wb") as f:
         pickle.dump(vocab, f)
 
-    with open("tinystories_merges.pkl", "wb") as f:
+    with open("owt_merges.pkl", "wb") as f:
         pickle.dump(merge_list, f)
     longest_token = max(vocab.values(), key=len)
     print(len(longest_token))

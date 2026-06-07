@@ -45,7 +45,7 @@ class SwiGLU(nn.Module):
         super().__init__()
         #设置3个可学习的参数矩阵，利用SiLU(𝑥) = 𝑥 ⋅ 𝜎(𝑥) = 𝑥/(1 + 𝑒−𝑥)激活当作GLU门控元素逐一相乘，fnn内部隐藏层设计为8/3的d_model,取相邻的64倍整数
         if d_ff is None:
-            self.d_ff = 8/3*d_model
+            self.d_ff = 4*d_model
             if self.d_ff % 64 != 0:
                 r = round(self.d_ff/64)#取最近的64整数因子
                 self.d_ff = 64*r
@@ -55,19 +55,19 @@ class SwiGLU(nn.Module):
             self.d_ff = d_ff
         self.w1 = Linear(d_model, self.d_ff)
         self.w2 = Linear(self.d_ff, d_model)
-        self.w3 = Linear(d_model, self.d_ff)
+        #self.w3 = Linear(d_model, self.d_ff)
     def forward(self, x:torch.Tensor)->torch.Tensor:
         activate = self.w1(x)
         gate = (activate)*torch.sigmoid(activate) #[..., dff]
-        gated_x = gate * (self.w3(x))
-        return self.w2(gated_x)
+        #gated_x = gate * (self.w3(x))
+        return self.w2(gate)
 
 class RotaryPositionalEmbedding(nn.Module):
     def __init__(self, theta:float, d_k:int, max_seq_length:int, device:torch.device|None = None) -> None:
         super().__init__()
         #先写cos,sin和theta组成的通用表达式
-        seq_index = torch.arange(max_seq_length, device=device).unsqueeze(1)#[s, 1]
-        d_k_index = torch.arange(d_k//2, device=device).unsqueeze(0)#[1, d_k/2]，这里其实不用unsqueeze也可以，因为右对齐，[d_k/2]会自动补一个[1]
+        seq_index = torch.arange(max_seq_length, device=device)[:, None]#[s, 1]
+        d_k_index = torch.arange(d_k//2, device=device)[None, :]#[1, d_k/2]，这里其实不用unsqueeze也可以，因为右对齐，[d_k/2]会自动补一个[1]
         freq = 1 / theta**(2*d_k_index/d_k)
         #用广播而不是矩阵乘法，广播时从右往左对齐，其中一个维度要么是1要么两个维度相同，维度为1的部分复制乘上其他部分
         angle = seq_index * freq
@@ -127,11 +127,12 @@ class MutiHeadCausalAttention(nn.Module):
         #初始化RoPE,需要theta常数、d, max_length.计算attention之前嵌入相对位置信息
         if theta is not None:
             self.rope = RotaryPositionalEmbedding(theta, self.head_dim, max_context_length)
-        self.output_proj = Linear(d_model, d_model)
+        self.output_proj = Linear(d_model, d_model)#这一层之前忘记写了
+
     def forward(self, x:torch.Tensor, token_positions:torch.Tensor|None = None)->torch.Tensor:
         #计算三个向量，对q和k拆分。如果rope存在，应用rope
         *before_dim, s, d= x.shape #前面的维度解包，表达为[b,k] s, d
-        assert d == self.d_model, "d_model must be same as d"
+        assert d == self.d_model, "d_model must be same as d"#这里之前忘记写了，检验一下更好报错清晰
         #Wx:[..., s, d_model]->[..., s, num_heads, head_dim]->[..., num_heads, s, head_dim]
         queires = self.q_proj(x).view(*before_dim, s, self.num_heads, self.head_dim).transpose(-2, -3)
         keys = self.k_proj(x).view(*before_dim, s, self.num_heads, self.head_dim).transpose(-2, -3)
