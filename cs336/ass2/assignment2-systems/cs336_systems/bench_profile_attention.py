@@ -1,10 +1,36 @@
 import argparse
+import cs336_basics.model as model_module
 from cs336_basics.model import BasicsTransformerLM
+from cs336_basics.nn_utils import softmax
 from cs336_basics.optimizer import AdamW
 from cs336_basics.nn_utils import cross_entropy
 import timeit
 import torch
 import torch.cuda.nvtx as nvtx
+import math
+from einops import einsum
+from jaxtyping import Bool, Float, Int
+from torch import Tensor
+@nvtx.range("scaled dot product attention")
+def annotated_scaled_dot_product_attention(
+     Q: Float[Tensor, " ... queries d_k"],
+    K: Float[Tensor, " ... keys    d_k"],
+    V: Float[Tensor, " ... keys    d_v"],
+    mask: Bool[Tensor, " ... queries keys"] | None = None,
+) -> Float[Tensor, " ... queries d_v"]:
+    d_k = K.shape[-1]
+
+    with nvtx.range("computing attention scores"):
+        attention_scores = einsum(Q, K, "... query d_k, ... key d_k -> ... query key") / math.sqrt(d_k)
+    if mask is not None:
+        with nvtx.range("mask"):
+            attention_scores = torch.where(mask, attention_scores, float("-inf"))
+        
+    with nvtx.range("computing softmax"):
+        attention_weights = softmax(attention_scores, dim=-1)
+    with nvtx.range("final matmul"):
+        return einsum(attention_weights, V, "... query key, ... key d_v ->  ... query d_v")
+
 def build_argparser():
     parser = argparse.ArgumentParser(description="测量模型前向、反向传播及训练耗时脚本")
     #确定模型超参数配置
@@ -37,7 +63,8 @@ def main(args):
     t = args.time_step
     #生成随机数据
     data = torch.randint(0, args.vocab_size,(args.batch_size, context_length+1), device=device)
-    #初始化模型和优化器以及全局变量
+    #初始化模型和优化器以及全局变量, 在创建 BasicsTransformerLM 之前，把模块里的函数临时替换掉
+    model_module.scaled_dot_product_attention = annotated_scaled_dot_product_attention
     model = BasicsTransformerLM(vocab_size=args.vocab_size, 
                                 context_length=context_length, 
                                 d_model=args.d_model, 

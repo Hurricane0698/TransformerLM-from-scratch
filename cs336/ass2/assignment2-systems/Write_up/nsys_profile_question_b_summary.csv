@@ -1,0 +1,10 @@
+model_size,mode,context_length,top_kernel_name,top_kernel_family,time_percent,total_time_ns,instances_captured,measured_passes,calls_per_pass,same_top_kernel_as_forward_only
+small,forward_only,256,ampere_sgemm_128x64_tn,matmul/GEMM,16.4,543295045,850,10,85.0,
+small,forward_and_backward,256,ampere_sgemm_128x64_tn,matmul/GEMM,20.4,264307580,850,10,85.0,True
+small,full_training_steps,256,ampere_sgemm_128x64_tn,matmul/GEMM,16.5,289255623,850,10,85.0,True
+small,forward_only,512,ampere_sgemm_128x64_tn,matmul/GEMM,57.6,528094292,850,10,85.0,
+small,forward_and_backward,512,ampere_sgemm_128x64_tn,matmul/GEMM,18.1,514764540,850,10,85.0,True
+small,full_training_steps,512,ampere_sgemm_128x64_tn,matmul/GEMM,16.4,538628682,850,10,85.0,True
+small,forward_only,1024,ampere_sgemm_128x64_tn,matmul/GEMM,45.1,1023338090,850,10,85.0,
+small,forward_and_backward,1024,ampere_sgemm_128x64_nn,matmul/GEMM,17.1,16947562572,720,10,72.0,False
+small,full_training_steps,1024,ampere_sgemm_128x64_nn,matmul/GEMM,14.8,16144051838,720,10,72.0,False
