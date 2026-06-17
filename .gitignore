@@ -38,5 +38,18 @@ cs336/ass2/assignment2-systems/*
 !cs336/ass2/assignment2-systems/Write_up/
 !cs336/ass2/assignment2-systems/Write_up/**
 
+# Local CS336 Assignment 2 profiling scratch artifacts. Keep writeup text
+# and representative SVGs visible; do not submit raw reports or CSV data.
+cs336/ass2/assignment2-systems/*.nsys-rep
+cs336/ass2/assignment2-systems/*.sqlite
+cs336/ass2/assignment2-systems/Write_up/*.csv
+cs336/ass2/assignment2-systems/Write_up/nsys_kernel_summaries/
+cs336/ass2/assignment2-systems/Write_up/nsys_attention_annotated_small_vs_medium_256.svg
+cs336/ass2/assignment2-systems/Write_up/nsys_medium_kernel_family_stacked.svg
+cs336/ass2/assignment2-systems/Write_up/nsys_medium_top_kernel_share.svg
+cs336/ass2/assignment2-systems/Write_up/nsys_medium_wall_time.svg
+cs336/ass2/assignment2-systems/Write_up/nsys_medium_bsz4_kernel_family_stacked.svg
+cs336/ass2/assignment2-systems/Write_up/nsys_small_vs_medium_forward_kernel_family.svg
+
 # External course/source materials cloned for local study
 cs336/lectures/

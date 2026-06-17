@@ -1,5 +1,5 @@
 import argparse
-import cs336_basics.model as model_module
+import cs336_basics.model as model_module #改模块全局namespace（字典），如果只导入scaled_dot_product_attention，后面做annotated相当于本地继续改这个名字，但是模型forward查的是模块全局名字。
 from cs336_basics.model import BasicsTransformerLM
 from cs336_basics.nn_utils import softmax
 from cs336_basics.optimizer import AdamW
