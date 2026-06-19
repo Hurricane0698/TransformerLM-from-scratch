@@ -2,6 +2,7 @@ import argparse
 from cs336_basics.model import BasicsTransformerLM
 from cs336_basics.optimizer import AdamW
 from cs336_basics.nn_utils import cross_entropy
+from torch.utils.checkpoint import checkpoint
 from contextlib import nullcontext
 import timeit
 import torch
@@ -29,7 +30,27 @@ def build_argparser():
     
     parser.add_argument("--bench-memory", action="store_true")
     parser.add_argument("--profile-autograd-nvtx", action="store_true")
+
+    #memory
+    parser.add_argument("--checkpoint-block-size", type=int, default=0)
     return parser
+
+def checkpointed_forward(model, input_ids, checkpoint_block_size):
+    x = model.token_embeddings(input_ids)
+
+    for start in range(0, len(model.layers), checkpoint_block_size):
+        end = min(start + checkpoint_block_size, len(model.layers))
+        chunk = model.layers[start:end]
+        def run_chunk(x):
+            #run_chunk 闭包会捕获循环变量 start/end
+            for layer in chunk:
+                x = layer(x)
+            return x
+
+        x = checkpoint(run_chunk, x, use_reentrant=False)
+
+    x = model.ln_final(x)
+    return model.lm_head(x)
 
 def main(args):
     '''对象：模型，优化器，计时器，随机生成的数据、loss、步数。不变量：时间必须反映warmup后真实训练耗时，步数必须反映实际步数，
@@ -132,6 +153,17 @@ def main(args):
         optimizer = AdamW(model.parameters())
         #memory记录分支
         if args.bench_memory:
+            if args.checkpoint_block_size > 0:
+                model.zero_grad(set_to_none=True)
+                torch.cuda.reset_peak_memory_stats()
+                k = args.checkpoint_block_size
+                logits = checkpointed_forward(model, inputs, k)
+                loss = cross_entropy(logits, targets)
+                loss.backward()
+                torch.cuda.synchronize()
+                peak_allocated = torch.cuda.max_memory_allocated()
+                peak_reserved = torch.cuda.max_memory_reserved()
+                return f"peak_allocated:{peak_allocated}, peak_reserved:{peak_reserved}"
             for i in range(w+1):
                 if i <= w-1:
                     model.zero_grad()
