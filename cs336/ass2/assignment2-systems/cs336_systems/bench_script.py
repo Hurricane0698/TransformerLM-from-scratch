@@ -40,9 +40,10 @@ def checkpointed_forward(model, input_ids, checkpoint_block_size):
 
     for start in range(0, len(model.layers), checkpoint_block_size):
         end = min(start + checkpoint_block_size, len(model.layers))
-        chunk = model.layers[start:end]
-        def run_chunk(x):
-            #run_chunk 闭包会捕获循环变量 start/end
+        #tuple只保留这些对象引用，不会多占一份权重
+        chunk = tuple(model.layers[start:end])
+        #start/end 不属于 checkpoint 的显式输入参数，所以 checkpoint 不会保存它们当时的值。
+        def run_chunk(x, chunk = chunk):
             for layer in chunk:
                 x = layer(x)
             return x
@@ -73,6 +74,7 @@ def main(args):
                                 num_heads=args.num_heads, 
                                 d_ff=args.d_ff)
     model = model.to(device)
+    model = torch.compile(model)
     inputs = data[:, :context_length]
     time_list = []
     #判断模式，热身，开始计时
