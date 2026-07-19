@@ -109,7 +109,7 @@ with output_path.open("w", newline="") as f:
                 
             #清理
             finally:
-                #删缓存
+                #删引用
                 del q, k, v, out, loss
-                #清空非缓存占用防止污染后续
+                #清空无引用缓存
                 torch.cuda.empty_cache()
