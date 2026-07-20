@@ -116,6 +116,7 @@ def flash_fwd_kernel(
     D: tl.constexpr,
     Q_TILE_SIZE: tl.constexpr,
     K_TILE_SIZE: tl.constexpr,
+    is_causal: tl.constexpr,
 ):
     # triton program由(q,b)唯一标识，一个 Triton program 处理一个 batch 的一个 query tile；一个 program 内由多个 GPU threads 协作
     query_tile_index = tl.program_id(0)
@@ -187,12 +188,27 @@ def flash_fwd_kernel(
     l_i = tl.zeros((Q_TILE_SIZE,), dtype=tl.float32)
     o_i = tl.zeros((Q_TILE_SIZE, D), dtype=tl.float32)
     m_i = tl.full((Q_TILE_SIZE,), value=-math.inf, dtype=tl.float32)
+    if is_causal:
+        # mask用的query序列,[b_q]
+        index_q_local = tl.arange(0, Q_TILE_SIZE)
+        index_q_global = index_q_local + query_tile_index * Q_TILE_SIZE
 
-    for _ in range(tl.cdiv(N_KEYS, K_TILE_SIZE)):
+
+    for j in range(tl.cdiv(N_KEYS, K_TILE_SIZE)):
         k_j = tl.load(K_block_ptr, boundary_check=(0, 1), padding_option="zero") # [b_k, D]
+        #尾key会污染softmax结果，所以要mask掉
+        index_k_local = tl.arange(0, K_TILE_SIZE)
+        index_k_global = index_k_local + j * K_TILE_SIZE
+        final_k_mask = N_KEYS > index_k_global
+        if is_causal:
+            masked = index_q_global[:,None] >= index_k_global[None, :]#[b_q, b_k]
         k_jt = tl.trans(k_j)
         v_j = tl.load(v_block_ptr, boundary_check=(0, 1), padding_option="zero")
         s_ij = tl.dot(q_i, k_jt) * scale #[b_q, b_k]
+        s_ij = tl.where(final_k_mask, s_ij, -1e6)
+        if is_causal:
+            #掩码为False处换为小常数
+            s_ij = tl.where(masked, s_ij, -1e6)
         m_new = tl.maximum(m_i, tl.max(s_ij, axis=-1, return_indices=False))#[b_q, ]
         alpha = tl.exp(m_i - m_new)
         p_ij = tl.exp(s_ij - m_new[:, None])#[b_q, b_k]
@@ -220,15 +236,14 @@ def flash_fwd_kernel(
 class MyTritonFlashAttentionAutogradFunctionClass(torch.autograd.Function):
     @staticmethod
     def forward(ctx, Q: Tensor, K: Tensor, V: Tensor, is_causal: bool = False) -> Tensor:
-        B, N_q, D = Q.shape
+        B, N_q, D = Q.shape#D_V = D
         N_k = K.shape[1]
-        D_v = V.shape[-1]
         b_q = 16
         b_k = 32
-        query_tile_count = triton.next_power_of_2(N_q) // b_q
+        query_tile_count = triton.cdiv(N_q, b_q)
         scale = 1 / math.sqrt(D)
         #预先分配完整O和L,device相同
-        O = V.new_empty((B, N_q, D_v))
+        O = V.new_empty((B, N_q, D))
         L = Q.new_empty((B, N_q))
 
         # grid 的两个轴分别枚举 query tile 与 batch；每个 program 独占一块输出，
@@ -243,6 +258,8 @@ class MyTritonFlashAttentionAutogradFunctionClass(torch.autograd.Function):
             stride_lb=L.stride(0), stride_lq=L.stride(1),
             scale=scale, N_QUERIES=N_q, N_KEYS=N_k,
             D=D, Q_TILE_SIZE=b_q, K_TILE_SIZE=b_k,
+            is_causal=is_causal
         )
+        ctx.is_causal = is_causal
         ctx.save_for_backward(L, Q, K, V, O)
         return O
