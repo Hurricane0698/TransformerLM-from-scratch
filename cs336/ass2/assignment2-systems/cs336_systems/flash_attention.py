@@ -4,11 +4,26 @@ import torch
 import triton
 import triton.language as tl
 from torch import Tensor
+from einops import rearrange, einsum
 
 # =============================================
 # pytorch版实现，为triton版确定debug基础
 # =============================================
+#普通backward函数，编译后交给autogradFunc调用得到结果最后返回
+def backward_pytorch(Q:Tensor,K:Tensor,V:Tensor,O:Tensor,dO:Tensor,L:Tensor):
+    d = Q.shape[-1]
+    scale = 1 / math.sqrt(d)
+    S = einsum(Q, K,"b n_q d, b n_k d -> b n_q n_k") * scale
+    D = torch.sum(O * dO, dim=-1, keepdim=True)
+    P = torch.exp(S - L[:, :, None])#b, n_q, n_k
+    dV = einsum(P,dO, "b n_q n_k, b n_q d -> b n_k d")
+    dP = einsum(dO, V, "b n_q d, b n_k d -> b n_q n_k")
+    dS = P * (dP - D)
+    dQ = einsum(dS,K,"b n_q n_k, b n_k d -> b n_q d") * scale
+    dK = einsum(dS, Q, "b n_q n_k,b n_q d -> b n_k d") * scale
+    return dQ, dK, dV
 
+compiled_backward = torch.compile(backward_pytorch)
 
 class autogradFunc(torch.autograd.Function):
     @staticmethod
@@ -69,8 +84,10 @@ class autogradFunc(torch.autograd.Function):
         return O
 
     @staticmethod
-    def backward(ctx, x):
-        raise NotImplementedError
+    def backward(ctx, dO:Tensor) -> tuple[Tensor, Tensor, Tensor, None]:
+        L, Q, K, V, O = ctx.saved_tensors
+        dQ, dK, dV = compiled_backward(Q, K, V, O, dO, L)
+        return dQ, dK, dV, None
 
 
 #=========================================
