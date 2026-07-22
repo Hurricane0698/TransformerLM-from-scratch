@@ -10,12 +10,20 @@ from einops import rearrange, einsum
 # pytorch版实现，为triton版确定debug基础
 # =============================================
 #普通backward函数，编译后交给autogradFunc调用得到结果最后返回
-def backward_pytorch(Q:Tensor,K:Tensor,V:Tensor,O:Tensor,dO:Tensor,L:Tensor):
+def backward_pytorch(Q:Tensor,K:Tensor,V:Tensor,O:Tensor,dO:Tensor,L:Tensor, is_causal = False):
     d = Q.shape[-1]
     scale = 1 / math.sqrt(d)
     S = einsum(Q, K,"b n_q d, b n_k d -> b n_q n_k") * scale
+    if is_causal:
+        n_q = Q.shape[1]
+        n_k = K.shape[1]
+        index_q = torch.arange(0, n_q, device=S.device)
+        index_k = torch.arange(0, n_k, device=S.device)
+        mask = index_q[:, None] >= index_k[None, :] #[n_q, n_k]
+        S = torch.where(mask, S, -torch.inf)
     D = torch.sum(O * dO, dim=-1, keepdim=True)
-    P = torch.exp(S - L[:, :, None])#b, n_q, n_k
+    # L为了稳定性保存成fp32，P进入矩阵乘法前转回输入dtype，否则bf16 benchmark会出现dtype不匹配
+    P = torch.exp(S - L[:, :, None]).to(V.dtype)#b, n_q, n_k
     dV = einsum(P,dO, "b n_q n_k, b n_q d -> b n_k d")
     dP = einsum(dO, V, "b n_q d, b n_k d -> b n_q n_k")
     dS = P * (dP - D)
@@ -23,7 +31,8 @@ def backward_pytorch(Q:Tensor,K:Tensor,V:Tensor,O:Tensor,dO:Tensor,L:Tensor):
     dK = einsum(dS, Q, "b n_q n_k,b n_q d -> b n_k d") * scale
     return dQ, dK, dV
 
-compiled_backward = torch.compile(backward_pytorch)
+#benchmark会连续切换N和D，dynamic=True避免每个shape都重新生成一套backward graph
+compiled_backward = torch.compile(backward_pytorch, dynamic=True)
 
 class autogradFunc(torch.autograd.Function):
     @staticmethod
@@ -250,33 +259,40 @@ def flash_fwd_kernel(
     tl.store(l_block_ptr, logsumexp_tile, boundary_check=(0,))
 
 
+def triton_flash_attention_forward(Q: Tensor, K: Tensor, V: Tensor, q_tile_size: int, k_tile_size: int, num_warps: int, is_causal: bool):
+    #对象: Q/K/V [B,N,D]，输出O [B,N,D]和L [B,N]
+    #tile和num_warps是kernel编译参数，benchmark只改这三个值，不改kernel主体
+    B, N_q, D = Q.shape
+    N_k = K.shape[1]
+    O = V.new_empty((B, N_q, D))
+    L = torch.empty((B, N_q), device=Q.device, dtype=torch.float32)
+    query_tile_count = triton.cdiv(N_q, q_tile_size)
+
+    flash_fwd_kernel[(query_tile_count, B)](
+        Q, K, V, O, L,
+        stride_qb=Q.stride(0), stride_qq=Q.stride(1), stride_qd=Q.stride(2),
+        stride_kb=K.stride(0), stride_kk=K.stride(1), stride_kd=K.stride(2),
+        stride_vb=V.stride(0), stride_vk=V.stride(1), stride_vd=V.stride(2),
+        stride_ob=O.stride(0), stride_oq=O.stride(1), stride_od=O.stride(2),
+        stride_lb=L.stride(0), stride_lq=L.stride(1),
+        N_QUERIES=N_q, N_KEYS=N_k, scale=1 / math.sqrt(D),
+        D=D, Q_TILE_SIZE=q_tile_size, K_TILE_SIZE=k_tile_size, is_causal=is_causal,
+        num_warps=num_warps,
+    )
+    return O, L
+
+
 class MyTritonFlashAttentionAutogradFunctionClass(torch.autograd.Function):
     @staticmethod
     def forward(ctx, Q: Tensor, K: Tensor, V: Tensor, is_causal: bool = False) -> Tensor:
-        B, N_q, D = Q.shape#D_V = D
-        N_k = K.shape[1]
-        b_q = 16
-        b_k = 32
-        query_tile_count = triton.cdiv(N_q, b_q)
-        scale = 1 / math.sqrt(D)
-        #预先分配完整O和L,device相同
-        O = V.new_empty((B, N_q, D))
-        L = Q.new_empty((B, N_q))
-
-        # grid 的两个轴分别枚举 query tile 与 batch；每个 program 独占一块输出，
-        # 因而 program 之间不共享 online-softmax 状态，也不需要原子操作或同步。
-        flash_fwd_kernel[(query_tile_count, B)](
-            Q, K, V,
-            O, L,
-            stride_qb=Q.stride(0), stride_qq=Q.stride(1), stride_qd=Q.stride(2),
-            stride_kb=K.stride(0), stride_kk=K.stride(1), stride_kd=K.stride(2),
-            stride_vb=V.stride(0), stride_vk=V.stride(1), stride_vd=V.stride(2),
-            stride_ob=O.stride(0), stride_oq=O.stride(1), stride_od=O.stride(2),
-            stride_lb=L.stride(0), stride_lq=L.stride(1),
-            scale=scale, N_QUERIES=N_q, N_KEYS=N_k,
-            D=D, Q_TILE_SIZE=b_q, K_TILE_SIZE=b_k,
-            is_causal=is_causal
-        )
+        #作业adapter仍然走固定tile；需要sweep时由benchmark自己的Function传tile
+        output, logsumexp = triton_flash_attention_forward(Q, K, V, 16, 32, 4, is_causal)
         ctx.is_causal = is_causal
-        ctx.save_for_backward(L, Q, K, V, O)
-        return O
+        ctx.save_for_backward(logsumexp, Q, K, V, output)
+        return output
+
+    @staticmethod
+    def backward(ctx, dO: Tensor) -> tuple[Tensor, Tensor, Tensor, None]:
+        logsumexp, Q, K, V, output = ctx.saved_tensors
+        dQ, dK, dV = compiled_backward(Q, K, V, output, dO, logsumexp, ctx.is_causal)
+        return dQ, dK, dV, None
