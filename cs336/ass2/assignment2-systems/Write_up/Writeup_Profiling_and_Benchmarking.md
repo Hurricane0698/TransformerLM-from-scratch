@@ -116,3 +116,16 @@ For one TransformerBlock, the forward pass saves about `1628.77 MiB` of residual
 | SwiGLU multiply (`model.py:401`) | 80.00 | 4.91% |
 
 During backward, active memory drops by about `1229.40 MiB` per TransformerBlock, so the produced gradient tensors take approximately `1628.77 - 1229.40 = 399.37 MiB`. This matches the expected per-block parameter-gradient size: `4 * 2560^2 + 3 * 10240 * 2560 + 2 * 2560` FP32 values, or about `400.02 MiB`.
+
+Problem (distributed_communication_single_node):
+
+I benchmarked NCCL all-reduce on a single Modal node with up to six NVIDIA H200 GPUs. Each GPU held a Float32 tensor, with 5 warm-up iterations followed by 10 measured iterations. The table reports the mean rank-local latency over all ranks and measured iterations; the binary message sizes used by the script are shown explicitly as MiB/GiB.
+
+| data size per GPU | 2 GPUs mean (ms) | 4 GPUs mean (ms) | 6 GPUs mean (ms) |
+| ----------------- | ----------------: | ----------------: | ----------------: |
+| 1 MiB             |             0.061 |             0.073 |             0.074 |
+| 10 MiB            |             0.098 |             0.148 |             0.134 |
+| 100 MiB           |             0.419 |             0.640 |             0.555 |
+| 1 GiB             |             3.306 |             4.564 |             4.284 |
+
+At a fixed GPU count, all-reduce latency increased sublinearly over the measured message sizes because fixed launch and synchronization costs dominated small transfers, while larger transfers increasingly approached the bandwidth-bound regime. Scaling with GPU count was non-monotonic: 2 GPUs were consistently fastest, while 4 GPUs were slower than 6 GPUs from 10 MiB through 1 GiB, plausibly because NCCL's topology-aware algorithm, protocol, and channel selection achieved higher effective bandwidth with 6 GPUs. Since the container did not expose the physical interconnect topology and the experiment used only 10 measured iterations per setting, this mechanism is a hypothesis rather than a confirmed causal explanation.
