@@ -2,7 +2,80 @@
 
 Batch size is 1 and causal masking is enabled. Latencies are mean milliseconds reported by `triton.testing.do_bench` with 25 ms warmup and 100 ms measurement. The Triton configuration is `Q_TILE_SIZE=16`, `K_TILE_SIZE=32`, `num_warps=4`.
 
-> Here, Triton backward refers to the assignment partial implementation: Triton forward plus the `torch.compile` PyTorch recomputation backward, not the optional Triton backward kernel.
+> The complete tables below preserve the original benchmark. In those tables, Triton backward means Triton forward plus the `torch.compile` PyTorch recomputation backward.
+
+## Optional Triton backward follow-up
+
+| N | PyTorch B | compiled B | Triton B | compiled / Triton | PyTorch / Triton | compiled F+B | Triton F+B | F+B improvement |
+|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| 128 | 0.187 | 0.119 | 0.062 | 1.91x | 3.01x | 0.179 | 0.091 | 1.97x |
+| 1024 | 0.184 | 0.112 | 0.062 | 1.81x | 2.96x | 0.166 | 0.087 | 1.91x |
+| 4096 | 0.391 | 0.138 | 0.169 | 0.82x | 2.32x | 0.224 | 0.258 | 0.87x |
+| 16384 | 5.288 | 1.677 | 1.615 | 1.04x | 3.27x | 2.450 | 2.389 | 1.03x |
+| 65536 | 81.549 | 34.552 | 23.370 | 1.48x | 3.49x | 46.564 | 35.367 | 1.32x |
+
+This is a deliberately small follow-up rather than a tile sweep. The strongest
+large-sequence result is at `N=65536`: the tiled backward is `1.48x` faster than
+the previous compiled backward and `3.49x` faster than the PyTorch baseline;
+forward plus backward improves by `1.32x` over the previous implementation.
+At `N=4096`, however, compiled backward is faster. The data therefore does not
+support claiming a uniform speedup across sequence lengths. The earlier
+three-stage run was executed separately, so this table does not use cross-run
+ratios to claim a fusion-only speedup.
+
+## Triton backward tile and warp sweep
+
+The tuning objective is backward latency, not a single global tile claim. The
+search used three stages:
+
+1. Compile smoke for all 27 combinations of `Q_TILE_SIZE`, `K_TILE_SIZE` in
+   `{16,32,64}` and `num_warps` in `{2,4,8}`.
+2. Screen all 27 configurations at BF16, `d=64`, and
+   `N={1024,4096,16384,65536}`.
+3. Re-test seven candidates across 12 `(N,d)` shapes, then confirm the default,
+   `64x64x4`, and `64x64x8` on the six long-sequence shapes with 100 ms warmup
+   and 500 ms measurement.
+
+
+`64x64x8` is the robust long-sequence winner. It won every confirmed shape for
+`N={16384,65536}` and `d={32,64,128}`. The default column is the original
+`16x32x4` Triton backward. Compiled latency is the median repeated measurement
+of Triton forward plus compiled PyTorch backward; naive is the course
+`scaled_dot_product_attention`, which materializes the full attention matrix.
+
+| N | d | best config | Triton B | default B | tuning gain | compiled B | vs compiled | naive B | vs naive |
+|---:|---:|:---|---:|---:|---:|---:|---:|---:|---:|
+| 16384 | 32 | 64x64x8 | 0.546 | 1.570 | 2.88x | 2.180 | 3.99x | 5.265 | 9.65x |
+| 16384 | 64 | 64x64x8 | 0.605 | 1.616 | 2.67x | 2.200 | 3.63x | 5.264 | 8.69x |
+| 16384 | 128 | 64x64x8 | 1.413 | 2.650 | 1.88x | 2.224 | 1.57x | 5.294 | 3.75x |
+| 65536 | 32 | 64x64x8 | 6.582 | 22.149 | 3.36x | 34.395 | 5.23x | 81.532 | 12.39x |
+| 65536 | 64 | 64x64x8 | 8.936 | 23.360 | 2.61x | 34.454 | 3.86x | 81.528 | 9.12x |
+| 65536 | 128 | 64x64x8 | 19.458 | 38.764 | 1.99x | 35.257 | 1.81x | 82.024 | 4.22x |
+
+The same configuration also wins the confirmed forward-plus-backward cases:
+
+| N | d | Triton F+B | best compiled F+B | speedup | naive F+B | speedup |
+|---:|---:|---:|---:|---:|---:|---:|
+| 16384 | 32 | 0.881 | 2.468 | 2.80x | 8.168 | 9.28x |
+| 16384 | 64 | 0.977 | 2.569 | 2.63x | 8.185 | 8.38x |
+| 16384 | 128 | 1.871 | 2.684 | 1.43x | 8.218 | 4.39x |
+| 65536 | 32 | 10.227 | 37.543 | 3.67x | 126.065 | 12.33x |
+| 65536 | 64 | 13.405 | 38.925 | 2.90x | 126.073 | 9.40x |
+| 65536 | 128 | 26.013 | 41.804 | 1.61x | 126.943 | 4.88x |
+
+The mechanism matches the tile ownership in the kernels. Increasing the query
+tile reduces the number of times each key/value tile is reread and shortens the
+query loop in the key-owned `dK/dV` kernel. Increasing the key tile shortens the
+key loop in the query-owned `dQ` kernel. Eight warps expose enough parallelism
+for the larger `64x64` matrix products. The benefit shrinks at `d=128` because
+the persistent gradient accumulators and temporary score tiles consume more
+registers, reducing the resource advantage of larger tiles.
+
+This is not a universal default for short sequences. In the 12-shape re-test,
+the sub-millisecond `N<=4096` winners varied with `d`; across all 12 shapes,
+`64x64x8` had the best geometric-mean normalized backward latency but could be
+up to `2.15x` slower than the per-shape winner. Use `64x64x8` as the established
+long-sequence B200 configuration, not as an architecture-independent optimum.
 
 ## bfloat16
 

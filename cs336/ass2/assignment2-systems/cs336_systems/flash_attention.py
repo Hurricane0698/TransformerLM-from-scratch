@@ -4,7 +4,7 @@ import torch
 import triton
 import triton.language as tl
 from torch import Tensor
-from einops import rearrange, einsum
+from einops import einsum
 
 # =============================================
 # pytorch版实现，为triton版确定debug基础
@@ -281,6 +281,395 @@ def triton_flash_attention_forward(Q: Tensor, K: Tensor, V: Tensor, q_tile_size:
     )
     return O, L
 
+#=======================================
+# Triton backward实现
+#=======================================
+
+'''P / dS 的 tile 网格
+
+              key j →
+          ┌───────────────┐
+query i ↓ │ 00 │ 01 │ 02 │  → 横向归约得到 dQ_i
+          ├────┼────┼────┤
+          │ 10 │ 11 │ 12 │
+          ├────┼────┼────┤
+          │ 20 │ 21 │ 22 │
+          └───────────────┘
+            ↓    ↓    ↓
+          纵向归约得到 dK_j、dV_j
+          
+          因此分成两个kernel'''
+@triton.jit
+def flash_bwd_dkdv_kernel(
+    Q_ptr, K_ptr, V_ptr, dO_ptr,
+    L_ptr, D_ptr, dK_ptr, dV_ptr,
+    stride_qb, stride_qq, stride_qd,
+    stride_kb, stride_kk, stride_kd,
+    stride_vb, stride_vk, stride_vd,
+    stride_dob, stride_doq, stride_dod,
+    stride_lb, stride_lq,
+    stride_db, stride_dq,
+    stride_dkb, stride_dkk, stride_dkd,
+    stride_dvb, stride_dvk, stride_dvd,
+    N_QUERIES, N_KEYS, scale,
+    D_HEAD: tl.constexpr,
+    Q_TILE_SIZE: tl.constexpr,
+    K_TILE_SIZE: tl.constexpr,
+    is_causal: tl.constexpr,
+):
+    #对象: 当前program固定一个key tile
+    #输入key/value [b_k,D]，循环读取query/dO [b_q,D]
+    #输出grad_key/grad_value [b_k,D]，所以当前program对这两个tile有唯一写权限，不需要atomic add
+    key_tile_index = tl.program_id(0)
+    batch_index = tl.program_id(1)
+    key_start = key_tile_index * K_TILE_SIZE
+
+    K_block_ptr = tl.make_block_ptr(
+        K_ptr + batch_index * stride_kb,
+        shape=(N_KEYS, D_HEAD),
+        strides=(stride_kk, stride_kd),
+        offsets=(key_start, 0),
+        block_shape=(K_TILE_SIZE, D_HEAD),
+        order=(1, 0),
+    )
+    V_block_ptr = tl.make_block_ptr(
+        V_ptr + batch_index * stride_vb,
+        shape=(N_KEYS, D_HEAD),
+        strides=(stride_vk, stride_vd),
+        offsets=(key_start, 0),
+        block_shape=(K_TILE_SIZE, D_HEAD),
+        order=(1, 0),
+    )
+    dK_block_ptr = tl.make_block_ptr(
+        dK_ptr + batch_index * stride_dkb,
+        shape=(N_KEYS, D_HEAD),
+        strides=(stride_dkk, stride_dkd),
+        offsets=(key_start, 0),
+        block_shape=(K_TILE_SIZE, D_HEAD),
+        order=(1, 0),
+    )
+    dV_block_ptr = tl.make_block_ptr(
+        dV_ptr + batch_index * stride_dvb,
+        shape=(N_KEYS, D_HEAD),
+        strides=(stride_dvk, stride_dvd),
+        offsets=(key_start, 0),
+        block_shape=(K_TILE_SIZE, D_HEAD),
+        order=(1, 0),
+    )
+    Q_block_ptr = tl.make_block_ptr(
+        Q_ptr + batch_index * stride_qb,
+        shape=(N_QUERIES, D_HEAD),
+        strides=(stride_qq, stride_qd),
+        offsets=(0, 0),
+        block_shape=(Q_TILE_SIZE, D_HEAD),
+        order=(1, 0),
+    )
+    dO_block_ptr = tl.make_block_ptr(
+        dO_ptr + batch_index * stride_dob,
+        shape=(N_QUERIES, D_HEAD),
+        strides=(stride_doq, stride_dod),
+        offsets=(0, 0),
+        block_shape=(Q_TILE_SIZE, D_HEAD),
+        order=(1, 0),
+    )
+    L_block_ptr = tl.make_block_ptr(
+        L_ptr + batch_index * stride_lb,
+        shape=(N_QUERIES,),
+        strides=(stride_lq,),
+        offsets=(0,),
+        block_shape=(Q_TILE_SIZE,),
+        order=(0,),
+    )
+    D_block_ptr = tl.make_block_ptr(
+        D_ptr + batch_index * stride_db,
+        shape=(N_QUERIES,),
+        strides=(stride_dq,),
+        offsets=(0,),
+        block_shape=(Q_TILE_SIZE,),
+        order=(0,),
+    )
+
+    key = tl.load(K_block_ptr, boundary_check=(0, 1), padding_option="zero")
+    value = tl.load(V_block_ptr, boundary_check=(0, 1), padding_option="zero")
+    key_offsets = key_start + tl.arange(0, K_TILE_SIZE)
+    grad_key = tl.zeros((K_TILE_SIZE, D_HEAD), dtype=tl.float32)
+    grad_value = tl.zeros((K_TILE_SIZE, D_HEAD), dtype=tl.float32)
+
+    #循环不变量:
+    #1.key/value不移动，始终是当前program负责的[b_k,D]
+    #2.grad_key/grad_value只包含已经扫描过的query tiles的贡献，并且一直使用fp32累加
+    #3.Q/dO/L/D四个指针始终指向相同的query tile，每轮结束同步advance
+    for query_tile_index in range(tl.cdiv(N_QUERIES, Q_TILE_SIZE)):
+        query = tl.load(Q_block_ptr, boundary_check=(0, 1), padding_option="zero")
+        grad_output = tl.load(dO_block_ptr, boundary_check=(0, 1), padding_option="zero")
+        logsumexp = tl.load(L_block_ptr, boundary_check=(0,), padding_option="zero")
+        delta = tl.load(D_block_ptr, boundary_check=(0,), padding_option="zero")
+        query_offsets = query_tile_index * Q_TILE_SIZE + tl.arange(0, Q_TILE_SIZE)
+
+        valid_pairs = (
+            (query_offsets[:, None] < N_QUERIES)
+            & (key_offsets[None, :] < N_KEYS)
+        )
+        if is_causal:
+            valid_pairs = valid_pairs & (query_offsets[:, None] >= key_offsets[None, :])
+
+        #query @ key.T: [b_q,D]，[D,b_k] ->  [b_q,b_k]
+        #P不从forward保存，通过exp(scores-L)重新计算，从而不读写完整[N_q,N_k]矩阵
+        scores = tl.dot(query, tl.trans(key)) * scale
+        probability = tl.where(
+            valid_pairs,
+            tl.exp(scores - logsumexp[:, None]),
+            0.0,
+        )
+        grad_probability = tl.dot(grad_output, tl.trans(value))  #[b_q,D]，[D,b_k] -> [b_q,b_k]
+        grad_score = probability * (grad_probability - delta[:, None])  #[b_q,b_k]
+
+        #两个输出的归约方向相同，都是把当前query tile的贡献加到固定key tile:
+        #grad_value += P.T @ dO: [b_k,b_q]@[b_q,D] -> [b_k,D]
+        #grad_key += dS.T @ Q: [b_k,b_q]@[b_q,D] -> [b_k,D]
+        #scale只属于S=QK.T/sqrt(D)对Q/K的链式求导，所以dK需要乘scale，dV不需要
+        #tl.dot输入转回Q/K/V的dtype让矩阵乘法走Tensor Core，
+        #但acc参数仍是fp32，不同query tiles的累加不退回bf16
+        grad_value = tl.dot(
+            tl.trans(probability.to(grad_output.dtype)),
+            grad_output,
+            acc=grad_value,
+        )
+        grad_key = tl.dot(
+            tl.trans(grad_score.to(query.dtype)),
+            query,
+            acc=grad_key,
+        )
+
+        Q_block_ptr = Q_block_ptr.advance((Q_TILE_SIZE, 0))
+        dO_block_ptr = dO_block_ptr.advance((Q_TILE_SIZE, 0))
+        L_block_ptr = L_block_ptr.advance((Q_TILE_SIZE,))
+        D_block_ptr = D_block_ptr.advance((Q_TILE_SIZE,))
+
+    tl.store(
+        dK_block_ptr,
+        (grad_key * scale).to(dK_block_ptr.type.element_ty),
+        boundary_check=(0, 1),
+    )
+    tl.store(
+        dV_block_ptr,
+        grad_value.to(dV_block_ptr.type.element_ty),
+        boundary_check=(0, 1),
+    )
+
+
+@triton.jit
+def flash_bwd_dq_kernel(
+    Q_ptr, K_ptr, V_ptr, O_ptr, dO_ptr,
+    L_ptr, D_ptr, dQ_ptr,
+    stride_qb, stride_qq, stride_qd,
+    stride_kb, stride_kk, stride_kd,
+    stride_vb, stride_vk, stride_vd,
+    stride_ob, stride_oq, stride_od,
+    stride_dob, stride_doq, stride_dod,
+    stride_lb, stride_lq,
+    stride_db, stride_dq,
+    stride_dqb, stride_dqq, stride_dqd,
+    N_QUERIES, N_KEYS, scale,
+    D_HEAD: tl.constexpr,
+    Q_TILE_SIZE: tl.constexpr,
+    K_TILE_SIZE: tl.constexpr,
+    is_causal: tl.constexpr,
+):
+    #对象: 当前program固定一个query tile
+    #输入query/output/dO [b_q,D]，循环读取key/value [b_k,D]
+    #输出D [b_q]和grad_query [b_q,D]，两者都只由当前program写一次
+    query_tile_index = tl.program_id(0)
+    batch_index = tl.program_id(1)
+    query_start = query_tile_index * Q_TILE_SIZE
+
+    Q_block_ptr = tl.make_block_ptr(
+        Q_ptr + batch_index * stride_qb,
+        shape=(N_QUERIES, D_HEAD),
+        strides=(stride_qq, stride_qd),
+        offsets=(query_start, 0),
+        block_shape=(Q_TILE_SIZE, D_HEAD),
+        order=(1, 0),
+    )
+    O_block_ptr = tl.make_block_ptr(
+        O_ptr + batch_index * stride_ob,
+        shape=(N_QUERIES, D_HEAD),
+        strides=(stride_oq, stride_od),
+        offsets=(query_start, 0),
+        block_shape=(Q_TILE_SIZE, D_HEAD),
+        order=(1, 0),
+    )
+    dO_block_ptr = tl.make_block_ptr(
+        dO_ptr + batch_index * stride_dob,
+        shape=(N_QUERIES, D_HEAD),
+        strides=(stride_doq, stride_dod),
+        offsets=(query_start, 0),
+        block_shape=(Q_TILE_SIZE, D_HEAD),
+        order=(1, 0),
+    )
+    L_block_ptr = tl.make_block_ptr(
+        L_ptr + batch_index * stride_lb,
+        shape=(N_QUERIES,),
+        strides=(stride_lq,),
+        offsets=(query_start,),
+        block_shape=(Q_TILE_SIZE,),
+        order=(0,),
+    )
+    D_block_ptr = tl.make_block_ptr(
+        D_ptr + batch_index * stride_db,
+        shape=(N_QUERIES,),
+        strides=(stride_dq,),
+        offsets=(query_start,),
+        block_shape=(Q_TILE_SIZE,),
+        order=(0,),
+    )
+    dQ_block_ptr = tl.make_block_ptr(
+        dQ_ptr + batch_index * stride_dqb,
+        shape=(N_QUERIES, D_HEAD),
+        strides=(stride_dqq, stride_dqd),
+        offsets=(query_start, 0),
+        block_shape=(Q_TILE_SIZE, D_HEAD),
+        order=(1, 0),
+    )
+    K_block_ptr = tl.make_block_ptr(
+        K_ptr + batch_index * stride_kb,
+        shape=(N_KEYS, D_HEAD),
+        strides=(stride_kk, stride_kd),
+        offsets=(0, 0),
+        block_shape=(K_TILE_SIZE, D_HEAD),
+        order=(1, 0),
+    )
+    V_block_ptr = tl.make_block_ptr(
+        V_ptr + batch_index * stride_vb,
+        shape=(N_KEYS, D_HEAD),
+        strides=(stride_vk, stride_vd),
+        offsets=(0, 0),
+        block_shape=(K_TILE_SIZE, D_HEAD),
+        order=(1, 0),
+    )
+
+    query = tl.load(Q_block_ptr, boundary_check=(0, 1), padding_option="zero")
+    output = tl.load(O_block_ptr, boundary_check=(0, 1), padding_option="zero")
+    grad_output = tl.load(dO_block_ptr, boundary_check=(0, 1), padding_option="zero")
+    logsumexp = tl.load(L_block_ptr, boundary_check=(0,), padding_option="zero")
+    query_offsets = query_start + tl.arange(0, Q_TILE_SIZE)
+    grad_query = tl.zeros((Q_TILE_SIZE, D_HEAD), dtype=tl.float32)
+
+    #D_i=sum_r O_ir*dO_ir，只沿最后一个D维归约，所以每个query row相互独立
+    #dQ kernel本来就要读取dO，再多读一个O tile就能在本program内完成D，不需要第三个kernel
+    #output/dO可能是bf16，但D会进入softmax backward的每个key tile，所以乘法和归约保留fp32
+    delta = tl.sum(output.to(tl.float32) * grad_output.to(tl.float32), axis=1)  #[b_q]
+    #这个store不是同一kernel内program之间的barrier；当前dQ计算直接使用寄存器里的delta
+    #写到global memory的副本只交给下一个dK/dV kernel使用
+    tl.store(D_block_ptr, delta, boundary_check=(0,))
+
+    #生命周期:
+    #query/grad_output/logsumexp/delta/grad_query活过整个key循环
+    #key/value/scores/probability/grad_probability/grad_score每轮重新产生，使用后即可释放
+    #P不从forward保存，而由scores和L就地重建，这是用重复计算换掉[N_q,N_k]显存读写
+    for key_tile_index in range(tl.cdiv(N_KEYS, K_TILE_SIZE)):
+        key = tl.load(K_block_ptr, boundary_check=(0, 1), padding_option="zero")
+        value = tl.load(V_block_ptr, boundary_check=(0, 1), padding_option="zero")
+        key_offsets = key_tile_index * K_TILE_SIZE + tl.arange(0, K_TILE_SIZE)
+
+        valid_pairs = (
+            (query_offsets[:, None] < N_QUERIES)
+            & (key_offsets[None, :] < N_KEYS)
+        )
+        if is_causal:
+            valid_pairs = valid_pairs & (query_offsets[:, None] >= key_offsets[None, :])
+
+        #boundary_check只保证load/store不会越界，不能阻止padding位置进入softmax
+        #因此还要用valid_pairs把尾key和causal上三角的P显式变成0
+        scores = tl.dot(query, tl.trans(key)) * scale
+        probability = tl.where(
+            valid_pairs,
+            tl.exp(scores - logsumexp[:, None]),
+            0.0,
+        )
+        grad_probability = tl.dot(grad_output, tl.trans(value))
+        grad_score = probability * (grad_probability - delta[:, None])
+
+        #grad_score [b_q,b_k] @ key [b_k,D] -> 当前key tile对grad_query [b_q,D]的贡献
+        #先在fp32 grad_query里累加完整key方向，循环结束再乘scale并转换回输入dtype
+        grad_query = tl.dot(
+            grad_score.to(key.dtype),
+            key,
+            acc=grad_query,
+        )
+
+        K_block_ptr = K_block_ptr.advance((K_TILE_SIZE, 0))  #K/V必须同步advance，否则会把K_j和V_{j+1}配错
+        V_block_ptr = V_block_ptr.advance((K_TILE_SIZE, 0))
+
+    tl.store(
+        dQ_block_ptr,
+        (grad_query * scale).to(dQ_block_ptr.type.element_ty),
+        boundary_check=(0, 1),
+    )
+
+
+def triton_flash_attention_backward(
+    Q: Tensor, K: Tensor, V: Tensor, output: Tensor, grad_output: Tensor, logsumexp: Tensor,
+    is_causal: bool, q_tile_size: int = 16, k_tile_size: int = 32, num_warps: int = 4,
+):
+    """Launch the two pure-Triton stages of Algorithm 2; no PyTorch fallback."""
+    B, N_q, D_head = Q.shape
+    N_k = K.shape[1]
+    expected_shape = (B, N_q, D_head)
+    if output.shape != expected_shape or grad_output.shape != expected_shape:
+        raise ValueError("O and dO must have shape [B, N_q, D]")
+    if K.shape != V.shape or K.shape[0] != B or K.shape[2] != D_head:
+        raise ValueError("K and V must have shape [B, N_k, D]")
+    if logsumexp.shape != (B, N_q):
+        raise ValueError("L must have shape [B, N_q]")
+    if D_head not in (16, 32, 64, 128):
+        raise ValueError("Triton backward requires D in {16, 32, 64, 128}")
+    if not (Q.dtype == K.dtype == V.dtype == output.dtype == grad_output.dtype):
+        raise TypeError("Q, K, V, O and dO must share one dtype")
+
+    dQ = torch.empty_like(Q)
+    dK = torch.empty_like(K)
+    dV = torch.empty_like(V)
+    delta = torch.empty((B, N_q), device=Q.device, dtype=torch.float32)
+    scale = 1 / math.sqrt(D_head)
+
+    #两个kernel默认进入同一条current CUDA stream，同stream launch严格按顺序执行:
+    #1.dQ kernel先计算并写出完整D
+    #2.dQ kernel全部完成后dK/dV kernel才开始，因此后者能看到完整D
+    #保证GPU工作顺序但不同步CPU 只有显式torch.cuda.synchronize才会让host等待
+    flash_bwd_dq_kernel[(triton.cdiv(N_q, q_tile_size), B)](
+        Q, K, V, output, grad_output, logsumexp, delta, dQ,
+        stride_qb=Q.stride(0), stride_qq=Q.stride(1), stride_qd=Q.stride(2),
+        stride_kb=K.stride(0), stride_kk=K.stride(1), stride_kd=K.stride(2),
+        stride_vb=V.stride(0), stride_vk=V.stride(1), stride_vd=V.stride(2),
+        stride_ob=output.stride(0), stride_oq=output.stride(1), stride_od=output.stride(2),
+        stride_dob=grad_output.stride(0), stride_doq=grad_output.stride(1), stride_dod=grad_output.stride(2),
+        stride_lb=logsumexp.stride(0), stride_lq=logsumexp.stride(1),
+        stride_db=delta.stride(0), stride_dq=delta.stride(1),
+        stride_dqb=dQ.stride(0), stride_dqq=dQ.stride(1), stride_dqd=dQ.stride(2),
+        N_QUERIES=N_q, N_KEYS=N_k, scale=scale,
+        D_HEAD=D_head, Q_TILE_SIZE=q_tile_size, K_TILE_SIZE=k_tile_size,
+        is_causal=is_causal, num_warps=num_warps,
+    )
+    flash_bwd_dkdv_kernel[(triton.cdiv(N_k, k_tile_size), B)](
+        Q, K, V, grad_output, logsumexp, delta, dK, dV,
+        stride_qb=Q.stride(0), stride_qq=Q.stride(1), stride_qd=Q.stride(2),
+        stride_kb=K.stride(0), stride_kk=K.stride(1), stride_kd=K.stride(2),
+        stride_vb=V.stride(0), stride_vk=V.stride(1), stride_vd=V.stride(2),
+        stride_dob=grad_output.stride(0), stride_doq=grad_output.stride(1), stride_dod=grad_output.stride(2),
+        stride_lb=logsumexp.stride(0), stride_lq=logsumexp.stride(1),
+        stride_db=delta.stride(0), stride_dq=delta.stride(1),
+        stride_dkb=dK.stride(0), stride_dkk=dK.stride(1), stride_dkd=dK.stride(2),
+        stride_dvb=dV.stride(0), stride_dvk=dV.stride(1), stride_dvd=dV.stride(2),
+        N_QUERIES=N_q, N_KEYS=N_k, scale=scale,
+        D_HEAD=D_head, Q_TILE_SIZE=q_tile_size, K_TILE_SIZE=k_tile_size,
+        is_causal=is_causal, num_warps=num_warps,
+    )
+    return dQ, dK, dV
+
+#=======================================
+# Triton版autograd
+#=======================================
 
 class MyTritonFlashAttentionAutogradFunctionClass(torch.autograd.Function):
     @staticmethod
@@ -294,5 +683,7 @@ class MyTritonFlashAttentionAutogradFunctionClass(torch.autograd.Function):
     @staticmethod
     def backward(ctx, dO: Tensor) -> tuple[Tensor, Tensor, Tensor, None]:
         logsumexp, Q, K, V, output = ctx.saved_tensors
-        dQ, dK, dV = compiled_backward(Q, K, V, output, dO, logsumexp, ctx.is_causal)
+        dQ, dK, dV = triton_flash_attention_backward(
+            Q, K, V, output, dO, logsumexp, ctx.is_causal,
+        )
         return dQ, dK, dV, None

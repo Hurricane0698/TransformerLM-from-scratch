@@ -11,7 +11,11 @@ import torch
 import triton.testing
 
 from cs336_basics.model import scaled_dot_product_attention
-from cs336_systems.flash_attention import compiled_backward, triton_flash_attention_forward
+from cs336_systems.flash_attention import (
+    compiled_backward,
+    triton_flash_attention_backward,
+    triton_flash_attention_forward,
+)
 
 #确定基本不变常量和数据写入title
 BATCH_SIZE = 1
@@ -44,6 +48,28 @@ def parse_tile_configs(value: str) -> tuple[tuple[int, int, int], ...]:
 
 class BenchmarkFlashAttention(torch.autograd.Function):
     #给benchmark传tile
+
+    @staticmethod
+    def forward(ctx, Q, K, V, q_tile_size, k_tile_size, num_warps):
+        output, logsumexp = triton_flash_attention_forward(Q, K, V, q_tile_size, k_tile_size, num_warps, True)
+        ctx.q_tile_size = q_tile_size
+        ctx.k_tile_size = k_tile_size
+        ctx.num_warps = num_warps
+        ctx.save_for_backward(logsumexp, Q, K, V, output)
+        return output
+
+    @staticmethod
+    def backward(ctx, dO):
+        logsumexp, Q, K, V, output = ctx.saved_tensors
+        dQ, dK, dV = triton_flash_attention_backward(
+            Q, K, V, output, dO, logsumexp, True,
+            ctx.q_tile_size, ctx.k_tile_size, ctx.num_warps,
+        )
+        return dQ, dK, dV, None, None, None
+
+
+class BenchmarkCompiledBackwardFlashAttention(torch.autograd.Function):
+    """Historical comparator: Triton forward plus the previous compiled PyTorch backward."""
 
     @staticmethod
     def forward(ctx, Q, K, V, q_tile_size, k_tile_size, num_warps):
@@ -135,20 +161,25 @@ def run_sweep(
             del Q, K, V, dO, index, causal_mask, pytorch_forward, timings
             clear_case()
 
+            providers = (
+                ("triton_compiled_backward", BenchmarkCompiledBackwardFlashAttention),
+                ("triton", BenchmarkFlashAttention),
+            )
             for q_tile, k_tile, num_warps in tile_configs:
-                Q, K, V, dO = make_inputs(N, D, DTYPES[dtype_name], seed)
+                for provider, implementation in providers:
+                    Q, K, V, dO = make_inputs(N, D, DTYPES[dtype_name], seed)
 
-                triton_forward = partial(BenchmarkFlashAttention.apply, Q, K, V, q_tile, k_tile, num_warps)
-                timings = benchmark_three_stages(triton_forward, Q, K, V, dO, warmup_ms, rep_ms)
-                base = {
-                    "gpu": gpu, "batch_size": BATCH_SIZE, "causal": True, "sequence_length": N,
-                    "embedding_dim": D, "dtype": dtype_name, "provider": "triton",
-                    "q_tile_size": q_tile, "k_tile_size": k_tile, "num_warps": num_warps,
-                }
-                write_rows(writer, base, timings)
-                file.flush()
-                del Q, K, V, dO, triton_forward, timings
-                clear_case()
+                    triton_forward = partial(implementation.apply, Q, K, V, q_tile, k_tile, num_warps)
+                    timings = benchmark_three_stages(triton_forward, Q, K, V, dO, warmup_ms, rep_ms)
+                    base = {
+                        "gpu": gpu, "batch_size": BATCH_SIZE, "causal": True, "sequence_length": N,
+                        "embedding_dim": D, "dtype": dtype_name, "provider": provider,
+                        "q_tile_size": q_tile, "k_tile_size": k_tile, "num_warps": num_warps,
+                    }
+                    write_rows(writer, base, timings)
+                    file.flush()
+                    del Q, K, V, dO, triton_forward, timings
+                    clear_case()
     return output_path
 
 
