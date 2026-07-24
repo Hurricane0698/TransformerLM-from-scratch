@@ -129,3 +129,6 @@ I benchmarked NCCL all-reduce on a single Modal node with up to six NVIDIA H200 
 | 1 GiB             |             3.306 |             4.564 |             4.284 |
 
 At a fixed GPU count, all-reduce latency increased sublinearly over the measured message sizes because fixed launch and synchronization costs dominated small transfers, while larger transfers increasingly approached the bandwidth-bound regime. Scaling with GPU count was non-monotonic: 2 GPUs were consistently fastest, while 4 GPUs were slower than 6 GPUs from 10 MiB through 1 GiB, plausibly because NCCL's topology-aware algorithm, protocol, and channel selection achieved higher effective bandwidth with 6 GPUs. Since the container did not expose the physical interconnect topology and the experiment used only 10 measured iterations per setting, this mechanism is a hypothesis rather than a confirmed causal explanation.
+
+Problem (naive_ddp_benchmarking):
+On a single Modal node with 2×H200 GPUs, the eager FP32 XL model averaged 739.49 ms per training step. Naïve per-parameter gradient synchronization took 59.02 ms, accounting for 7.98% of total step time.
