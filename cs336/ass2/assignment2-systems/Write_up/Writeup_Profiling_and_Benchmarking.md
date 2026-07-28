@@ -132,3 +132,6 @@ At a fixed GPU count, all-reduce latency increased sublinearly over the measured
 
 Problem (naive_ddp_benchmarking):
 On a single Modal node with 2×H200 GPUs, the eager FP32 XL model averaged 739.49 ms per training step. Naïve per-parameter gradient synchronization took 59.02 ms, accounting for 7.98% of total step time.
+
+Problem (minimal_ddp_flat_benchmarking):
+Under the same nominal single-node 2×H200 eager-FP32 XL setup, one batched all-reduce over the flattened gradients with the reduced flat-buffer views rebound to `parameter.grad` averaged 738.60 ms per training step, with 55.71 ms spent in gradient synchronization (7.54%). Compared with the previously measured per-parameter baseline, batching was 0.89 ms (0.12%) faster overall and 3.31 ms (5.61%) faster in the measured synchronization interval; because these are separate 10-step runs, the small total-step difference should be treated descriptively rather than as a stable speedup.

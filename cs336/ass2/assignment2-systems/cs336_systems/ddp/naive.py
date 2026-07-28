@@ -1,6 +1,6 @@
+import torch
 import torch.distributed as dist
 import torch.nn as nn
-import torch
 
 
 class NaiveDDP(nn.Module):

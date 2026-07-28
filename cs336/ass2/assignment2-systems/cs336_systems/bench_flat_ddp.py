@@ -1,16 +1,18 @@
 import os
-import torch
 import timeit
+
+import torch
 import torch.distributed as dist
 import torch.multiprocessing as mp
 from cs336_basics.model import BasicsTransformerLM
-from cs336_basics.optimizer import AdamW
-from cs336_systems.ddp.naive import NaiveDDP
 from cs336_basics.nn_utils import cross_entropy
+from cs336_basics.optimizer import AdamW
+
+from cs336_systems.ddp.flat import FlatDDP
 
 # 先创建模型XL参数config
-# worker内，完成forward数据创建，初始化以及通过naive ddp进行同步
-# worker计算自己loss，通过naiveddp同步梯度再optimizer更新，记录平均的总耗时和grad同步耗时，同时计算衍生指标占比
+# worker内，完成forward数据创建，初始化以及通过flat ddp进行同步
+# worker计算自己loss，通过flat ddp同步梯度再optimizer更新，记录平均的总耗时和grad同步耗时，同时计算衍生指标占比
 # 打印结果
 model_config = {"vocab_size": 10000, "context_length": 512, "d_model": 2560, "d_ff": 10240, "num_layers": 32, "num_heads": 32}
 
@@ -35,7 +37,7 @@ def benchmark_worker(rank: int, world_size: int, global_batch_size: int, model_c
         )
         # 先把模型移动到gpu
         xl_model.to("cuda")
-        xl_model = NaiveDDP(xl_model)
+        xl_model = FlatDDP(xl_model)
         optimizer = AdamW(xl_model.parameters())
         for _ in range(warmups):
             optimizer.zero_grad()
