@@ -135,3 +135,17 @@ On a single Modal node with 2×H200 GPUs, the eager FP32 XL model averaged 739.4
 
 Problem (minimal_ddp_flat_benchmarking):
 Under the same nominal single-node 2×H200 eager-FP32 XL setup, one batched all-reduce over the flattened gradients with the reduced flat-buffer views rebound to `parameter.grad` averaged 738.60 ms per training step, with 55.71 ms spent in gradient synchronization (7.54%). Compared with the previously measured per-parameter baseline, batching was 0.89 ms (0.12%) faster overall and 3.31 ms (5.61%) faster in the measured synchronization interval; because these are separate 10-step runs, the small total-step difference should be treated descriptively rather than as a stable speedup.
+
+Problem (ddp_overlap_individual_parameters_benchmarking):
+(a): Under the same nominal single-node 2×H200 eager-FP32 XL setup, the overlapped per-parameter DDP implementation averaged 699.17 ms per training step. Relative to the separately measured naïve and flat-gradient baselines, this corresponds to reductions of 40.32 ms (5.45%) and 39.43 ms (5.34%), respectively.
+(b): I used PyTorch Profiler rather than Nsight Systems for the timeline comparison. Each rank collected CPU and CUDA activities from exactly one training step after five warm-up steps, then exported its own Chrome-trace JSON with `torch.profiler.profile` and `export_chrome_trace`. I opened the rank-0 traces in Perfetto to produce the screenshots below. Nsight Systems was not used because the Modal container reports `Timestamp counter supported: No`, and Nsight Systems 2026.3.1 fails while converting its CUDA timestamps with `Time conversion from GPU UUID ... is not supported from CTA`.
+
+![Naive DDP PyTorch Profiler trace opened in Perfetto](pytorch_profiler/naive_ddp_perfetto_timeline.png)
+
+In the naïve trace, the backward work on CUDA stream 7 finishes before the `gradient_sync` section begins. All 291 NCCL all-reduce kernels occur after the CPU `backward` range: on rank 0 they run from 567.595 ms to 627.785 ms relative to the start of `profile_step`, giving 0 ms of intersection with the CPU backward range.
+
+![Overlap DDP PyTorch Profiler trace opened in Perfetto](pytorch_profiler/overlap_ddp_perfetto_timeline.png)
+
+In the overlap trace, the NCCL all-reduces use a separate CUDA stream, shown as stream 17, while the backward kernels continue on stream 7. On rank 0, the first NCCL kernel starts 182.972 ms after `profile_step` begins, and NCCL execution intersects the CPU `backward` range for 298.937 ms. Rank 1 shows the same pattern with a 299.203 ms intersection. The later `finish_gradient_sync` range is consequently only a short wait before the optimizer step. This directly shows that the reduced end-to-end time comes from communication being issued during backward rather than from removing the communication.
+
+The profiled one-step run took 750.39 ms for naïve DDP and 704.22 ms for overlap DDP. These values include profiler overhead, so I use them as corroborating measurements rather than replacing the unprofiled benchmark results. The four per-rank JSON traces, the two Perfetto screenshots, and the Modal run metadata are saved under `Write_up/pytorch_profiler/`.
